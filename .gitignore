@@ -4,3 +4,13 @@ __pycache__/
 .venv/
 *.egg-info/
 .cursor/
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+.pytest_cache/
+.mypy_cache/
+frontend/dist/
+uploads/*
+!uploads/.gitkeep

@@ -24,8 +24,10 @@ jobs:
             cd /root/onedo-bot
             git pull
             if [ -f docker-compose.yml ]; then
-              docker-compose build
-              docker-compose down
-              docker-compose up -d
+              export DOCKER_BUILDKIT=1
+              export COMPOSE_DOCKER_CLI_BUILD=1
+              docker compose build
+              docker compose down
+              docker compose up -d
               docker system prune -f
             fi

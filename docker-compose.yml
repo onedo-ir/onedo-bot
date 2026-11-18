@@ -1,9 +1,88 @@
 services:
   nginx:
-    image: nginx:alpine
-    container_name: onedo-bot-web
+    build:
+      context: ./nginx
+    container_name: onedo-bot-nginx
     ports:
       - "12277:80"
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - onedo-net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NPM_REGISTRY: https://package-mirror.liara.ir/repository/npm/
+    container_name: onedo-bot-frontend
+    networks:
+      - onedo-net
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        PIP_INDEX_URL: https://package-mirror.liara.ir/repository/pypi/simple
+    container_name: onedo-bot-backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://onedo:onedo_secret@db:5432/onedo_bot
+      BROWSER_WS_URL: ws://browser:3000
+      BROWSER_HTTP_URL: http://browser:3000
+    depends_on:
+      db:
+        condition: service_healthy
+      browser:
+        condition: service_started
+    networks:
+      - onedo-net
     volumes:
-      - ./public:/usr/share/nginx/html:ro
-    restart: always
+      - browser_data:/data/browser
+    restart: unless-stopped
+
+  browser:
+    build:
+      context: ./browser
+      args:
+        PIP_INDEX_URL: https://package-mirror.liara.ir/repository/pypi/simple
+    container_name: onedo-bot-browser
+    environment:
+      DISPLAY_WIDTH: "1280"
+      DISPLAY_HEIGHT: "800"
+    networks:
+      - onedo-net
+    volumes:
+      - browser_data:/data/browser
+    shm_size: "1gb"
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: onedo-bot-db
+    environment:
+      POSTGRES_USER: onedo
+      POSTGRES_PASSWORD: onedo_secret
+      POSTGRES_DB: onedo_bot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - onedo-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U onedo -d onedo_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+networks:
+  onedo-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  browser_data:
