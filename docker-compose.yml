@@ -1,0 +1,9 @@
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: onedo-bot-web
+    ports:
+      - "12277:80"
+    volumes:
+      - ./public:/usr/share/nginx/html:ro
+    restart: always
