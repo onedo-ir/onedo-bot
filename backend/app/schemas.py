@@ -1,9 +1,23 @@
+import re
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from app.models import MessageRole, TaskStatus, UserRole
+
+# اجازهٔ دامنه‌های نمونه مثل .local (EmailStr آن‌ها را رد می‌کند)
+Email = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, to_lower=True, min_length=3, max_length=255),
+]
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _validate_email(value: str) -> str:
+    if not _EMAIL_RE.match(value):
+        raise ValueError("فرمت ایمیل نامعتبر است")
+    return value
 
 
 class Token(BaseModel):
@@ -12,19 +26,25 @@ class Token(BaseModel):
 
 
 class UserCreate(BaseModel):
-    email: EmailStr
+    email: Email
     password: str = Field(min_length=6)
     full_name: str = ""
 
+    def model_post_init(self, __context: Any) -> None:
+        object.__setattr__(self, "email", _validate_email(self.email))
+
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: Email
     password: str
+
+    def model_post_init(self, __context: Any) -> None:
+        object.__setattr__(self, "email", _validate_email(self.email))
 
 
 class UserOut(BaseModel):
     id: int
-    email: EmailStr
+    email: Email
     full_name: str
     role: UserRole
     is_active: bool
@@ -140,10 +160,13 @@ class AgentConfigUpdate(BaseModel):
 
 
 class AdminUserCreate(BaseModel):
-    email: EmailStr
+    email: Email
     password: str = Field(min_length=6)
     full_name: str = ""
     role: UserRole = UserRole.user
+
+    def model_post_init(self, __context: Any) -> None:
+        object.__setattr__(self, "email", _validate_email(self.email))
 
 
 class HealthOut(BaseModel):

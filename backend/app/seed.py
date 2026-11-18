@@ -12,9 +12,14 @@ from app.models import (
     User,
     UserRole,
 )
-from app.security import hash_password
+from app.security import hash_password, verify_password
 
 settings = get_settings()
+
+
+def _ensure_password(user: User, plain: str) -> None:
+    if not verify_password(plain, user.hashed_password):
+        user.hashed_password = hash_password(plain)
 
 
 def seed_database(db: Session) -> None:
@@ -29,6 +34,10 @@ def seed_database(db: Session) -> None:
         )
         db.add(admin)
         db.flush()
+    else:
+        _ensure_password(admin, settings.default_admin_password)
+        if admin.role != UserRole.admin:
+            admin.role = UserRole.admin
 
     demo = db.query(User).filter(User.email == "demo@onedo.local").first()
     if not demo:
@@ -89,6 +98,8 @@ def seed_database(db: Session) -> None:
                 secret_note="رمز واقعی ذخیره نشده — فقط برچسب نمونه",
             )
         )
+    else:
+        _ensure_password(demo, "Demo123!")
 
     defaults = {
         "ai_base_url": settings.openai_compatible_base_url,
