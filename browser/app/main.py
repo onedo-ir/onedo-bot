@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from playwright.async_api import Browser, Page, async_playwright
+from playwright.async_api import Browser, Error as PlaywrightError, Locator, Page, async_playwright
 from pydantic import BaseModel
 
 WIDTH = 1280
@@ -71,6 +71,40 @@ async def ensure_page() -> Page:
     return page
 
 
+def http_playwright_error(exc: Exception) -> HTTPException:
+    detail = str(exc).split("\n", 1)[0][:500]
+    status = 408 if "Timeout" in type(exc).__name__ or "Timeout" in detail else 422
+    return HTTPException(status_code=status, detail=detail)
+
+
+async def first_actionable(page: Page, selector: str, timeout: int = 12000) -> Locator:
+    """Prefer a visible match; avoid hidden inputs that compound selectors often hit first."""
+    sel = (selector or "").strip() or "body"
+    base = page.locator(sel)
+    visible = base.locator("visible=true").first
+    try:
+        await visible.wait_for(state="visible", timeout=timeout)
+        return visible
+    except PlaywrightError:
+        pass
+
+    count = min(await base.count(), 20)
+    for index in range(count):
+        candidate = base.nth(index)
+        try:
+            if await candidate.is_visible():
+                return candidate
+        except PlaywrightError:
+            continue
+
+    first = base.first
+    try:
+        await first.wait_for(state="attached", timeout=min(timeout, 4000))
+    except PlaywrightError as exc:
+        raise http_playwright_error(exc) from exc
+    return first
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     pw = await async_playwright().start()
@@ -120,7 +154,13 @@ async def navigate(payload: NavigateIn):
 @app.post("/click")
 async def click(payload: ClickIn):
     page = await ensure_page()
-    await page.click(payload.selector, timeout=15000)
+    try:
+        locator = await first_actionable(page, payload.selector)
+        await locator.click(timeout=10000)
+    except HTTPException:
+        raise
+    except PlaywrightError as exc:
+        raise http_playwright_error(exc) from exc
     await page.wait_for_timeout(400)
     return {"url": page.url, "title": await page.title()}
 
@@ -128,12 +168,23 @@ async def click(payload: ClickIn):
 @app.post("/type")
 async def type_text(payload: TypeIn):
     page = await ensure_page()
-    locator = page.locator(payload.selector).first
-    await locator.wait_for(timeout=15000)
-    if payload.clear:
-        await locator.fill(payload.text)
-    else:
-        await locator.type(payload.text)
+    try:
+        locator = await first_actionable(page, payload.selector)
+        await locator.click(timeout=5000)
+        if payload.clear:
+            await locator.fill(payload.text, timeout=10000)
+        else:
+            await locator.type(payload.text, timeout=10000)
+    except HTTPException:
+        raise
+    except PlaywrightError as exc:
+        # Fallback: type into currently focused element
+        try:
+            if payload.clear:
+                await page.keyboard.press("Control+A")
+            await page.keyboard.type(payload.text or "", delay=12)
+        except PlaywrightError as inner:
+            raise http_playwright_error(exc) from inner
     await page.wait_for_timeout(300)
     return {"url": page.url, "title": await page.title()}
 
@@ -142,12 +193,16 @@ async def type_text(payload: TypeIn):
 async def press(payload: PressIn):
     page = await ensure_page()
     key = (payload.key or "Enter").strip() or "Enter"
-    if payload.selector:
-        locator = page.locator(payload.selector).first
-        await locator.wait_for(timeout=15000)
-        await locator.press(key)
-    else:
-        await page.keyboard.press(key)
+    try:
+        if payload.selector:
+            locator = await first_actionable(page, payload.selector)
+            await locator.press(key, timeout=10000)
+        else:
+            await page.keyboard.press(key)
+    except HTTPException:
+        raise
+    except PlaywrightError as exc:
+        raise http_playwright_error(exc) from exc
     await page.wait_for_timeout(400)
     return {"url": page.url, "title": await page.title(), "key": key}
 
@@ -163,7 +218,13 @@ async def wait(payload: WaitIn):
 @app.post("/extract")
 async def extract(payload: ExtractIn):
     page = await ensure_page()
-    text = await page.locator(payload.selector).first.inner_text(timeout=10000)
+    try:
+        locator = await first_actionable(page, payload.selector or "body", timeout=8000)
+        text = await locator.inner_text(timeout=8000)
+    except HTTPException:
+        raise
+    except PlaywrightError as exc:
+        raise http_playwright_error(exc) from exc
     return {"text": text[:20000], "url": page.url}
 
 

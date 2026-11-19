@@ -118,6 +118,11 @@ async def call_llm_next_action(
         "search unless the user explicitly asked to search Google or no better "
         "URL is known.\n"
         "- After typing in a search box or form, press Enter or click submit.\n"
+        "- For click/type selectors: prefer ONE specific visible field "
+        "(e.g. input[name='q'] or textarea). Avoid broad comma-separated selectors "
+        "that may match hidden inputs first.\n"
+        "- If a previous action failed, pick a different selector or click the field "
+        "first, then type.\n"
         "- Credential vault is private (not shown in UI). You MAY read the vault "
         "list provided below and use save_credential to store new login notes.\n"
         "- If unsure, login is required, or an irreversible action is needed, use ask.\n"
@@ -222,51 +227,108 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
             action = (decision.get("action") or "").lower().strip()
             reason = decision.get("reason") or ""
 
-            if action == "navigate":
-                result = await browser.navigate(decision.get("url") or "about:blank")
-                task.current_url = result.get("url")
-                detail = task.current_url
-                append_step(task, {"action": "navigate", "detail": detail, "reason": reason})
-                history.append({"action": "navigate", "detail": detail, "reason": reason})
+            if action in {"navigate", "click", "type", "press", "wait", "extract"}:
+                try:
+                    if action == "navigate":
+                        result = await browser.navigate(
+                            decision.get("url") or "about:blank"
+                        )
+                        task.current_url = result.get("url")
+                        detail = task.current_url
+                        append_step(
+                            task,
+                            {"action": "navigate", "detail": detail, "reason": reason},
+                        )
+                        history.append(
+                            {"action": "navigate", "detail": detail, "reason": reason}
+                        )
 
-            elif action == "click":
-                selector = decision.get("selector") or "body"
-                result = await browser.click(selector)
-                task.current_url = result.get("url", task.current_url)
-                append_step(task, {"action": "click", "detail": selector, "reason": reason})
-                history.append({"action": "click", "detail": selector, "reason": reason})
+                    elif action == "click":
+                        selector = decision.get("selector") or "body"
+                        result = await browser.click(selector)
+                        task.current_url = result.get("url", task.current_url)
+                        append_step(
+                            task,
+                            {"action": "click", "detail": selector, "reason": reason},
+                        )
+                        history.append(
+                            {"action": "click", "detail": selector, "reason": reason}
+                        )
 
-            elif action == "type":
-                selector = decision.get("selector") or "input"
-                text = decision.get("text") or ""
-                result = await browser.type_text(selector, text)
-                task.current_url = result.get("url", task.current_url)
-                detail = text[:80]
-                append_step(task, {"action": "type", "detail": detail, "reason": reason})
-                history.append({"action": "type", "detail": detail, "reason": reason})
+                    elif action == "type":
+                        selector = decision.get("selector") or "input"
+                        text = decision.get("text") or ""
+                        result = await browser.type_text(selector, text)
+                        task.current_url = result.get("url", task.current_url)
+                        detail = text[:80]
+                        append_step(
+                            task,
+                            {"action": "type", "detail": detail, "reason": reason},
+                        )
+                        history.append(
+                            {"action": "type", "detail": detail, "reason": reason}
+                        )
 
-            elif action == "press":
-                key = decision.get("key") or "Enter"
-                result = await browser.press(key, decision.get("selector"))
-                task.current_url = result.get("url", task.current_url)
-                append_step(task, {"action": "press", "detail": key, "reason": reason})
-                history.append({"action": "press", "detail": key, "reason": reason})
+                    elif action == "press":
+                        key = decision.get("key") or "Enter"
+                        result = await browser.press(key, decision.get("selector"))
+                        task.current_url = result.get("url", task.current_url)
+                        append_step(
+                            task,
+                            {"action": "press", "detail": key, "reason": reason},
+                        )
+                        history.append(
+                            {"action": "press", "detail": key, "reason": reason}
+                        )
 
-            elif action == "wait":
-                ms = int(decision.get("ms") or 1000)
-                result = await browser.wait(ms)
-                task.current_url = result.get("url", task.current_url)
-                append_step(task, {"action": "wait", "detail": f"{ms}ms", "reason": reason})
-                history.append({"action": "wait", "detail": f"{ms}ms", "reason": reason})
+                    elif action == "wait":
+                        ms = int(decision.get("ms") or 1000)
+                        result = await browser.wait(ms)
+                        task.current_url = result.get("url", task.current_url)
+                        append_step(
+                            task,
+                            {"action": "wait", "detail": f"{ms}ms", "reason": reason},
+                        )
+                        history.append(
+                            {
+                                "action": "wait",
+                                "detail": f"{ms}ms",
+                                "reason": reason,
+                            }
+                        )
 
-            elif action == "extract":
-                selector = decision.get("selector") or "body"
-                result = await browser.extract(selector)
-                last_extract = (result.get("text") or "")[:2000]
-                task.current_url = result.get("url", task.current_url)
-                detail = last_extract[:120]
-                append_step(task, {"action": "extract", "detail": detail, "reason": reason})
-                history.append({"action": "extract", "detail": detail, "reason": reason})
+                    elif action == "extract":
+                        selector = decision.get("selector") or "body"
+                        result = await browser.extract(selector)
+                        last_extract = (result.get("text") or "")[:2000]
+                        task.current_url = result.get("url", task.current_url)
+                        detail = last_extract[:120]
+                        append_step(
+                            task,
+                            {"action": "extract", "detail": detail, "reason": reason},
+                        )
+                        history.append(
+                            {"action": "extract", "detail": detail, "reason": reason}
+                        )
+                except Exception as action_exc:  # noqa: BLE001
+                    err = str(action_exc)[:300]
+                    append_step(
+                        task,
+                        {
+                            "action": f"{action}_error",
+                            "detail": err,
+                            "reason": reason,
+                        },
+                    )
+                    history.append(
+                        {
+                            "action": f"{action}_error",
+                            "detail": err,
+                            "reason": reason,
+                        }
+                    )
+                    db.commit()
+                    continue
 
             elif action == "save_credential":
                 item = save_vault_item(
@@ -308,7 +370,9 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 task.summary = summary[:2000]
                 task.current_url = (await browser.current()).get("url", task.current_url)
                 task.status = TaskStatus.completed
-                append_step(task, {"action": "done", "detail": "کار تمام شد", "reason": reason})
+                append_step(
+                    task, {"action": "done", "detail": "کار تمام شد", "reason": reason}
+                )
                 _add_assistant(db, task.conversation_id, task.summary)
                 db.commit()
                 db.refresh(task)

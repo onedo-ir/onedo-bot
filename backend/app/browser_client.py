@@ -14,7 +14,14 @@ class BrowserClient:
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.request(method, f"{self.base_url}{path}", **kwargs)
-            response.raise_for_status()
+            if response.status_code >= 400:
+                detail: Any
+                try:
+                    payload = response.json()
+                    detail = payload.get("detail", payload)
+                except Exception:  # noqa: BLE001
+                    detail = response.text or response.reason_phrase
+                raise RuntimeError(f"browser {path}: {detail}")
             return response.json()
 
     async def health(self) -> dict[str, Any]:
