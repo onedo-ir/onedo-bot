@@ -108,9 +108,18 @@ def seed_database(db: Session) -> None:
         "browser_live_enabled": "true",
         "ask_on_uncertainty": "true",
     }
+    stale_ai = {
+        "ai_base_url": {"", "https://api.openai.com/v1"},
+        "ai_model": {"", "gpt-4o-mini"},
+        "ai_api_key": {""},
+    }
     for key, value in defaults.items():
         existing = db.query(AppSetting).filter(AppSetting.key == key).first()
         if not existing:
             db.add(AppSetting(key=key, value=value))
+            continue
+        current = (existing.value or "").strip()
+        if key in stale_ai and current in stale_ai[key] and (value or "").strip():
+            existing.value = value
 
     db.commit()

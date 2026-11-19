@@ -12,9 +12,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 10080
     database_url: str = "postgresql+psycopg2://onedo:onedo_secret@db:5432/onedo_bot"
-    openai_compatible_base_url: str = "https://api.openai.com/v1"
+    openai_compatible_base_url: str = "https://onedo.ir/v1"
     openai_compatible_api_key: str = ""
-    openai_compatible_model: str = "gpt-4o-mini"
+    openai_compatible_model: str = "auto"
     default_admin_email: str = "admin@onedo.local"
     default_admin_password: str = "Admin123!"
     cors_origins: str = "*"

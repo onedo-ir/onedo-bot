@@ -132,7 +132,7 @@ def send_message(
     assistant = Message(
         conversation_id=conv.id,
         role=MessageRole.assistant,
-        content="دستور را گرفتم. مرورگر کروم را آماده می‌کنم و کار را شروع می‌کنم…",
+        content="دستور را به ایجنت هوش مصنوعی دادم. هر جا لازم باشد خودش به مرورگر وصل می‌شود و قدم‌به‌قدم جلو می‌رود…",
     )
     db.add(assistant)
     db.commit()

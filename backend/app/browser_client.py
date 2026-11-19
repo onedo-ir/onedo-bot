@@ -34,6 +34,15 @@ class BrowserClient:
             "POST", "/type", json={"selector": selector, "text": text, "clear": clear}
         )
 
+    async def press(self, key: str = "Enter", selector: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"key": key}
+        if selector:
+            payload["selector"] = selector
+        return await self._request("POST", "/press", json=payload)
+
+    async def wait(self, ms: int = 1000) -> dict[str, Any]:
+        return await self._request("POST", "/wait", json={"ms": ms})
+
     async def extract(self, selector: str = "body") -> dict[str, Any]:
         return await self._request("POST", "/extract", json={"selector": selector})
 

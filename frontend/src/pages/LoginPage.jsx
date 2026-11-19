@@ -28,11 +28,11 @@ export default function LoginPage() {
     <div className="auth-shell">
       <form className="auth-card stack" onSubmit={onSubmit}>
         <div className="brand-mark">
-          <div className="brand-dot" />
-          <h1>ورود به Onedo</h1>
+          <div className="brand-dot" aria-hidden="true" />
+          <h1>ورود</h1>
         </div>
         <p className="muted" style={{ marginTop: 0 }}>
-          با ایمیل وارد شو تا چت و مرورگر زنده‌ات آماده باشد.
+          با ایمیل وارد شو تا ایجنت و نمای زندهٔ مرورگر آماده باشد.
         </p>
         {error && <div className="error-box">{error}</div>}
         <label>

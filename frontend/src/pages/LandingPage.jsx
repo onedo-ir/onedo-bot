@@ -8,17 +8,20 @@ export default function LandingPage() {
     <div className="auth-shell">
       <div className="auth-card" style={{ width: "min(720px, 100%)" }}>
         <div className="brand-mark">
-          <div className="brand-dot" />
-          <h1>Onedo bot</h1>
+          <div className="brand-dot" aria-hidden="true" />
+          <div>
+            <h1 className="hero-title">Onedo</h1>
+            <div className="muted" style={{ fontSize: "0.9rem", fontWeight: 500 }}>browser agent</div>
+          </div>
         </div>
-        <p className="muted" style={{ fontSize: "1.05rem", lineHeight: 1.9, marginTop: 0 }}>
-          دستیار گرم و خودمانی شما برای کارهای مرورگر: پر کردن فرم، خرید آنلاین، جمع‌آوری اطلاعات،
-          کارهای تکراری روزانه و مدیریت پنل‌ها — با چت متنی و تماشای زندهٔ کروم.
+        <p className="hero-copy">
+          ایجنت هوش مصنوعی که وقتی لازم باشد مرورگر را به دست می‌گیرد؛ چت کن، تماشا کن، نتیجه را
+          خلاصه بگیر.
         </p>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div className="hero-actions">
           {user ? (
             <Link className="btn" to="/app">
-              برو به میز کار
+              ادامه در میز کار
             </Link>
           ) : (
             <>
@@ -26,7 +29,7 @@ export default function LandingPage() {
                 ورود
               </Link>
               <Link className="btn ghost" to="/register">
-                ثبت‌نام با ایمیل
+                ساخت حساب
               </Link>
             </>
           )}

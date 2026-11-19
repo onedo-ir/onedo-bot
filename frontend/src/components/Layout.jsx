@@ -32,11 +32,11 @@ export default function Layout() {
       <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
         <div className="sidebar-top">
           <div className="brand-mark" style={{ marginBottom: 0 }}>
-            <div className="brand-dot" />
+            <div className="brand-dot" aria-hidden="true" />
             <div>
-              <strong>Onedo bot</strong>
+              <strong>Onedo</strong>
               <div className="muted" style={{ fontSize: "0.78rem" }}>
-                دستیار مرورگر شما
+                ایجنت مرورگر
               </div>
             </div>
           </div>
@@ -50,25 +50,25 @@ export default function Layout() {
           </button>
         </div>
 
-        <nav className="nav-list">
+        <nav className="nav-list" aria-label="منوی اصلی">
           <NavLink className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} to="/app" end>
-            گفتگو و مرورگر
+            گفتگو
           </NavLink>
           <NavLink className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} to="/app/tasks">
-            تاریخچه کارها
+            کارها
           </NavLink>
           <NavLink
             className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
             to="/app/credentials"
           >
-            حساب‌ها و رمزها
+            حساب‌ها
           </NavLink>
           {user?.role === "admin" && (
             <NavLink
               className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
               to="/app/admin"
             >
-              پنل مدیریت
+              مدیریت
             </NavLink>
           )}
         </nav>
@@ -112,7 +112,7 @@ export default function Layout() {
             <div>
               <strong>سلام {user?.full_name || "دوست عزیز"}</strong>
               <div className="muted topbar-subtitle">
-                کار را مثل چت بگو؛ من در کروم انجامش می‌دهم.
+                به ایجنت بگو چه می‌خواهی؛ خودش وقتی لازم باشد مرورگر را کنترل می‌کند.
               </div>
             </div>
           </div>

@@ -1,16 +1,32 @@
 import json
+import re
 from typing import Any
 
 import httpx
 from sqlalchemy.orm import Session
 
 from app.browser_client import BrowserClient
+from app.config import get_settings
 from app.models import AgentTask, AppSetting, Message, MessageRole, TaskStatus
+
+MAX_STEPS = 15
 
 
 def get_setting(db: Session, key: str, default: str = "") -> str:
     row = db.query(AppSetting).filter(AppSetting.key == key).first()
-    return row.value if row else default
+    if row and (row.value or "").strip():
+        return row.value.strip()
+    return default
+
+
+def resolve_ai_config(db: Session) -> tuple[str, str, str]:
+    settings = get_settings()
+    api_key = get_setting(db, "ai_api_key", settings.openai_compatible_api_key)
+    base_url = get_setting(
+        db, "ai_base_url", settings.openai_compatible_base_url
+    ).rstrip("/")
+    model = get_setting(db, "ai_model", settings.openai_compatible_model)
+    return api_key, base_url, model
 
 
 def append_step(task: AgentTask, step: dict[str, Any]) -> None:
@@ -23,54 +39,122 @@ def append_step(task: AgentTask, step: dict[str, Any]) -> None:
     task.steps_log = json.dumps(steps, ensure_ascii=False)
 
 
-async def call_llm(db: Session, instruction: str, page_text: str) -> dict[str, Any]:
-    api_key = get_setting(db, "ai_api_key")
-    base_url = get_setting(db, "ai_base_url", "https://api.openai.com/v1").rstrip("/")
-    model = get_setting(db, "ai_model", "gpt-4o-mini")
+def parse_llm_json(content: str) -> dict[str, Any]:
+    text = (content or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        data = json.loads(match.group(0))
+        if isinstance(data, dict):
+            return data
+    raise ValueError("پاسخ مدل JSON معتبر نبود")
+
+
+async def call_llm_next_action(
+    db: Session,
+    instruction: str,
+    page_url: str,
+    page_title: str,
+    page_text: str,
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    api_key, base_url, model = resolve_ai_config(db)
 
     if not api_key:
         return {
-            "mode": "heuristic",
-            "plan": [
-                {"action": "navigate", "url": "https://www.google.com"},
-                {"action": "type", "selector": "textarea[name=q], input[name=q]", "text": instruction[:120]},
-                {"action": "extract", "selector": "body"},
-                {"action": "ask", "question": "آیا ادامه بدهم یا نتیجه جستجو کافی است؟"},
-            ],
-            "summary": "کلید API تنظیم نشده؛ اجرای آزمایشی با جستجوی گوگل انجام شد.",
+            "action": "ask",
+            "question": (
+                "کلید API ایجنت تنظیم نشده. از پنل ادمین یا متغیر "
+                "OPENAI_COMPATIBLE_API_KEY آن را تنظیم کنید."
+            ),
+            "reason": "missing_api_key",
         }
 
     system = (
-        "You are Onedo bot, a careful browser agent. "
-        "Return STRICT JSON with keys plan (list of actions) and summary (string). "
-        "Allowed actions: navigate{url}, click{selector}, type{selector,text}, "
-        "extract{selector}, ask{question}, done{}. "
-        "If unsure or login needed, use ask. Keep selectors simple. Respond in Persian summary."
+        "You are Onedo bot, a careful browser agent for Persian users.\n"
+        "Decide ONLY the single next action. Return STRICT JSON object with keys:\n"
+        '  action: one of navigate|click|type|press|wait|extract|ask|done\n'
+        "  url (navigate), selector (click/type/extract), text (type),\n"
+        "  key (press, e.g. Enter), ms (wait), question (ask),\n"
+        "  summary (Persian, for done), reason (short).\n"
+        "Rules:\n"
+        "- Use the browser only when needed for the user goal.\n"
+        "- Prefer going directly to the relevant site/page. Do NOT use Google "
+        "search unless the user explicitly asked to search Google or no better "
+        "URL is known.\n"
+        "- After typing in a search box or form, press Enter or click submit.\n"
+        "- If unsure, login is required, or an irreversible action is needed, use ask.\n"
+        "- When the goal is finished (or pure Q&A with no browsing needed), use done "
+        "with a clear Persian summary.\n"
+        "Respond with JSON only."
     )
+    history_lines = []
+    for item in history[-12:]:
+        history_lines.append(
+            f"- {item.get('action')}: {item.get('detail') or item.get('reason') or ''}"
+        )
     user_prompt = (
-        f"Instruction:\n{instruction}\n\n"
-        f"Current page text (truncated):\n{page_text[:4000]}\n"
+        f"User instruction:\n{instruction}\n\n"
+        f"Current page URL: {page_url or 'about:blank'}\n"
+        f"Current page title: {page_title or ''}\n\n"
+        f"Recent actions:\n"
+        + ("\n".join(history_lines) if history_lines else "(none)")
+        + "\n\n"
+        f"Visible page text (truncated):\n{page_text[:4500]}\n"
     )
 
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
     async with httpx.AsyncClient(timeout=90.0) as client:
-        response = await client.post(
-            f"{base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": model,
-                "temperature": 0.2,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "response_format": {"type": "json_object"},
-            },
-        )
+        headers = {"Authorization": f"Bearer {api_key}"}
+        try:
+            response = await client.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json={**payload, "response_format": {"type": "json_object"}},
+            )
+            if response.status_code >= 400:
+                response = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+        except httpx.HTTPError:
+            response = await client.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
-        data = json.loads(content)
+        data = parse_llm_json(content)
         data["mode"] = "llm"
         return data
+
+
+def _add_assistant(db: Session, conversation_id: int, content: str) -> None:
+    db.add(
+        Message(
+            conversation_id=conversation_id,
+            role=MessageRole.assistant,
+            content=content,
+        )
+    )
 
 
 async def run_task(db: Session, task_id: int) -> AgentTask:
@@ -83,59 +167,141 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
     db.commit()
 
     browser = BrowserClient()
-    try:
-        current = await browser.current()
-        page_text = (await browser.extract("body")).get("text", "")
-        plan_data = await call_llm(db, task.instruction, page_text)
-        plan = plan_data.get("plan") or []
+    history: list[dict[str, Any]] = []
+    last_extract = ""
 
-        for item in plan:
-            action = (item.get("action") or "").lower()
+    try:
+        for _ in range(MAX_STEPS):
+            current = await browser.current()
+            page_url = current.get("url") or task.current_url or "about:blank"
+            page_title = current.get("title") or ""
+            try:
+                page_text = (await browser.extract("body")).get("text", "")
+            except Exception:  # noqa: BLE001
+                page_text = ""
+
+            decision = await call_llm_next_action(
+                db,
+                task.instruction,
+                page_url,
+                page_title,
+                page_text,
+                history,
+            )
+            action = (decision.get("action") or "").lower().strip()
+            reason = decision.get("reason") or ""
+
             if action == "navigate":
-                result = await browser.navigate(item.get("url", "https://example.com"))
+                result = await browser.navigate(decision.get("url") or "about:blank")
                 task.current_url = result.get("url")
-                append_step(task, {"action": "navigate", "detail": task.current_url})
+                detail = task.current_url
+                append_step(task, {"action": "navigate", "detail": detail, "reason": reason})
+                history.append({"action": "navigate", "detail": detail, "reason": reason})
+
             elif action == "click":
-                result = await browser.click(item.get("selector", "body"))
+                selector = decision.get("selector") or "body"
+                result = await browser.click(selector)
                 task.current_url = result.get("url", task.current_url)
-                append_step(task, {"action": "click", "detail": item.get("selector")})
+                append_step(task, {"action": "click", "detail": selector, "reason": reason})
+                history.append({"action": "click", "detail": selector, "reason": reason})
+
             elif action == "type":
-                result = await browser.type_text(
-                    item.get("selector", "input"), item.get("text", "")
-                )
+                selector = decision.get("selector") or "input"
+                text = decision.get("text") or ""
+                result = await browser.type_text(selector, text)
                 task.current_url = result.get("url", task.current_url)
-                append_step(task, {"action": "type", "detail": item.get("text", "")[:80]})
+                detail = text[:80]
+                append_step(task, {"action": "type", "detail": detail, "reason": reason})
+                history.append({"action": "type", "detail": detail, "reason": reason})
+
+            elif action == "press":
+                key = decision.get("key") or "Enter"
+                result = await browser.press(key, decision.get("selector"))
+                task.current_url = result.get("url", task.current_url)
+                append_step(task, {"action": "press", "detail": key, "reason": reason})
+                history.append({"action": "press", "detail": key, "reason": reason})
+
+            elif action == "wait":
+                ms = int(decision.get("ms") or 1000)
+                result = await browser.wait(ms)
+                task.current_url = result.get("url", task.current_url)
+                append_step(task, {"action": "wait", "detail": f"{ms}ms", "reason": reason})
+                history.append({"action": "wait", "detail": f"{ms}ms", "reason": reason})
+
             elif action == "extract":
-                result = await browser.extract(item.get("selector", "body"))
-                append_step(task, {"action": "extract", "detail": (result.get("text") or "")[:120]})
+                selector = decision.get("selector") or "body"
+                result = await browser.extract(selector)
+                last_extract = (result.get("text") or "")[:2000]
+                task.current_url = result.get("url", task.current_url)
+                detail = last_extract[:120]
+                append_step(task, {"action": "extract", "detail": detail, "reason": reason})
+                history.append({"action": "extract", "detail": detail, "reason": reason})
+
             elif action == "ask":
                 task.status = TaskStatus.waiting_user
-                task.waiting_question = item.get("question") or "برای ادامه راهنمایی کنید."
-                append_step(task, {"action": "ask", "detail": task.waiting_question})
-                db.add(
-                    Message(
-                        conversation_id=task.conversation_id,
-                        role=MessageRole.assistant,
-                        content=f"⏸ کار متوقف شد.\n{task.waiting_question}",
-                    )
+                task.waiting_question = (
+                    decision.get("question") or "برای ادامه راهنمایی کنید."
+                )
+                append_step(
+                    task,
+                    {"action": "ask", "detail": task.waiting_question, "reason": reason},
+                )
+                _add_assistant(
+                    db,
+                    task.conversation_id,
+                    f"⏸ کار متوقف شد.\n{task.waiting_question}",
                 )
                 db.commit()
                 db.refresh(task)
                 return task
+
             elif action == "done":
-                break
+                summary = (
+                    decision.get("summary")
+                    or last_extract
+                    or "کار انجام شد."
+                )
+                task.summary = summary[:2000]
+                task.current_url = (await browser.current()).get("url", task.current_url)
+                task.status = TaskStatus.completed
+                append_step(task, {"action": "done", "detail": "کار تمام شد", "reason": reason})
+                _add_assistant(db, task.conversation_id, f"✅ خلاصه نتیجه:\n{task.summary}")
+                db.commit()
+                db.refresh(task)
+                return task
+
+            else:
+                append_step(
+                    task,
+                    {
+                        "action": "unknown",
+                        "detail": action or "empty",
+                        "reason": reason,
+                    },
+                )
+                history.append({"action": "unknown", "detail": action, "reason": reason})
+                task.status = TaskStatus.waiting_user
+                task.waiting_question = (
+                    "ایجنت پاسخ نامشخصی از مدل گرفت. چطور ادامه بدهم؟"
+                )
+                _add_assistant(db, task.conversation_id, f"⚠ {task.waiting_question}")
+                db.commit()
+                db.refresh(task)
+                return task
+
+            db.commit()
 
         extract = await browser.extract("body")
         task.current_url = (await browser.current()).get("url", task.current_url)
-        task.summary = plan_data.get("summary") or (extract.get("text") or "")[:500]
+        task.summary = (last_extract or extract.get("text") or "سقف مراحل ایجنت تمام شد.")[
+            :2000
+        ]
         task.status = TaskStatus.completed
-        append_step(task, {"action": "done", "detail": "کار تمام شد"})
-        db.add(
-            Message(
-                conversation_id=task.conversation_id,
-                role=MessageRole.assistant,
-                content=f"✅ خلاصه نتیجه:\n{task.summary}",
-            )
+        append_step(task, {"action": "done", "detail": "سقف مراحل"})
+        _add_assistant(
+            db,
+            task.conversation_id,
+            f"✅ به سقف مراحل رسیدم. خلاصه تا اینجا:\n{task.summary[:800]}",
         )
         db.commit()
     except Exception as exc:  # noqa: BLE001
@@ -144,13 +310,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
             f"خطا رخ داد: {exc}. چطور ادامه بدهم؟ می‌توانید راهنمایی کنید یا کار را لغو کنید."
         )
         append_step(task, {"action": "error", "detail": str(exc)})
-        db.add(
-            Message(
-                conversation_id=task.conversation_id,
-                role=MessageRole.assistant,
-                content=f"⚠ {task.waiting_question}",
-            )
-        )
+        _add_assistant(db, task.conversation_id, f"⚠ {task.waiting_question}")
         db.commit()
 
     db.refresh(task)

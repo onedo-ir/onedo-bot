@@ -30,6 +30,15 @@ class ExtractIn(BaseModel):
     selector: str = "body"
 
 
+class PressIn(BaseModel):
+    key: str = "Enter"
+    selector: str | None = None
+
+
+class WaitIn(BaseModel):
+    ms: int = 1000
+
+
 async def ensure_page() -> Page:
     page: Page | None = state.get("page")
     browser: Browser | None = state.get("browser")
@@ -103,6 +112,28 @@ async def type_text(payload: TypeIn):
         await locator.type(payload.text)
     await page.wait_for_timeout(300)
     return {"url": page.url, "title": await page.title()}
+
+
+@app.post("/press")
+async def press(payload: PressIn):
+    page = await ensure_page()
+    key = (payload.key or "Enter").strip() or "Enter"
+    if payload.selector:
+        locator = page.locator(payload.selector).first
+        await locator.wait_for(timeout=15000)
+        await locator.press(key)
+    else:
+        await page.keyboard.press(key)
+    await page.wait_for_timeout(400)
+    return {"url": page.url, "title": await page.title(), "key": key}
+
+
+@app.post("/wait")
+async def wait(payload: WaitIn):
+    page = await ensure_page()
+    ms = max(0, min(int(payload.ms or 0), 15000))
+    await page.wait_for_timeout(ms)
+    return {"url": page.url, "title": await page.title(), "ms": ms}
 
 
 @app.post("/extract")

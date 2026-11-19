@@ -108,17 +108,17 @@ export default function ChatPage() {
       <section className="chat-panel">
         <div className="panel-header">
           <div>
-            <strong>چت با Onedo</strong>
+            <strong>ایجنت Onedo</strong>
             <div className="muted" style={{ fontSize: "0.82rem" }}>
-              دستور را بنویس؛ اگر گیر کرد می‌پرسد.
+              پیام به AI می‌رود؛ خودش وقتی لازم باشد مرورگر را کنترل می‌کند.
             </div>
           </div>
           <div className="panel-header-actions">
             <button className="btn ghost conv-toggle" type="button" onClick={() => setShowConvs((v) => !v)}>
-              {showConvs ? "بستن لیست" : "گفتگوها"}
+              {showConvs ? "بستن" : "گفتگوها"}
             </button>
             <button className="btn soft" type="button" onClick={newChat}>
-              گفتگوی تازه
+              جدید
             </button>
           </div>
         </div>
@@ -147,6 +147,8 @@ export default function ChatPage() {
               {messages.length === 0 && (
                 <div className="empty">
                   مثلاً بگو: «برو دیجی‌کالا و یک هدفون بی‌سیم خوب پیدا کن»
+                  <br />
+                  ایجنت تصمیم می‌گیرد چه صفحه‌ای باز کند و چه کلیک/تایپی بزند.
                 </div>
               )}
               {messages.map((m) => (
@@ -161,7 +163,7 @@ export default function ChatPage() {
               <textarea
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                placeholder="کار بعدی‌ات را اینجا بنویس…"
+                placeholder="به ایجنت بگو چه کاری انجام دهد…"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -170,7 +172,7 @@ export default function ChatPage() {
                 }}
               />
               <button className="btn composer-send" type="button" disabled={busy} onClick={send}>
-                ارسال
+                {busy ? "…" : "ارسال"}
               </button>
             </div>
           </div>
@@ -180,13 +182,13 @@ export default function ChatPage() {
       <section className="browser-panel">
         <div className="panel-header">
           <div>
-            <strong>کروم زنده</strong>
+            <strong>Safari Live</strong>
             <div className="muted" style={{ fontSize: "0.82rem" }}>
-              همزمان ببین چه می‌کند
+              نمای زندهٔ کرومِ ایجنت
             </div>
           </div>
           <button className="btn ghost" type="button" onClick={() => api.browserReset()}>
-            ریست مرورگر
+            ریست
           </button>
         </div>
         <div className="browser-frame">
@@ -194,7 +196,7 @@ export default function ChatPage() {
           {frame.image ? (
             <img src={frame.image} alt="live browser" />
           ) : (
-            <div className="empty" style={{ color: "#ddd" }}>
+            <div className="empty" style={{ color: "#aeaeb2" }}>
               در انتظار تصویر زنده…
             </div>
           )}

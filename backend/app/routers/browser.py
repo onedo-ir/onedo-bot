@@ -2,10 +2,8 @@ import asyncio
 import json
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session
 
 from app.browser_client import BrowserClient
-from app.database import get_db
 from app.models import User
 from app.security import get_current_user
 
@@ -49,8 +47,15 @@ async def browser_live(websocket: WebSocket):
                         }
                     )
                 )
+            except WebSocketDisconnect:
+                return
             except Exception as exc:  # noqa: BLE001
-                await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
+                try:
+                    await websocket.send_text(
+                        json.dumps({"type": "error", "message": str(exc)})
+                    )
+                except Exception:  # noqa: BLE001
+                    return
             await asyncio.sleep(1.2)
     except WebSocketDisconnect:
         return
