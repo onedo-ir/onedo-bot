@@ -30,6 +30,12 @@ from app.schedule_service import (
 )
 
 MAX_STEPS = 15
+# Refresh mandatory body extract at most every N loops when URL is unchanged.
+EXTRACT_EVERY_N_STEPS = 3
+# Prompt size caps (actions stay fuller; page text stays short).
+PAGE_TEXT_PROMPT_CHARS = 1500
+PAGE_ACTIONS_PROMPT_CHARS = 4000
+LAST_EXTRACT_PROMPT_CHARS = 8000
 # Persistent file vault (no panel UI / no DB table). Shared browser_data volume.
 CREDENTIALS_FILE = Path("/data/browser/credentials.json")
 COOKIES_FILE = Path("/data/browser/cookies.json")
@@ -88,7 +94,10 @@ def list_vault() -> list[dict[str, Any]]:
 
 
 def format_cookies_file_for_prompt(*, max_rows: int = 40) -> str:
-    """Compact cookie index for the LLM (names/domains; values truncated)."""
+    """Compact cookie index for the LLM (name/domain/path only; no values).
+
+    Full values are available via the list_cookies action when needed.
+    """
     try:
         raw = json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -102,16 +111,16 @@ def format_cookies_file_for_prompt(*, max_rows: int = 40) -> str:
         updated = "-"
     else:
         return f"(empty or missing — {COOKIES_FILE})"
-    lines = [f"file={COOKIES_FILE} updated_at={updated} count={len(rows)}"]
+    lines = [
+        f"file={COOKIES_FILE} updated_at={updated} count={len(rows)} "
+        "(names/domains only; use list_cookies for values)"
+    ]
     for row in rows[:max_rows]:
         if not isinstance(row, dict):
             continue
-        value = str(row.get("value") or "")
-        if len(value) > 24:
-            value = value[:12] + "…" + value[-6:]
         lines.append(
             f"- name={row.get('name') or '-'} | domain={row.get('domain') or '-'} | "
-            f"path={row.get('path') or '/'} | value={value or '-'}"
+            f"path={row.get('path') or '/'}"
         )
     if len(rows) > max_rows:
         lines.append(f"… +{len(rows) - max_rows} more (use list_cookies)")
@@ -528,15 +537,16 @@ async def call_llm_next_action(
         f"{schedules_text}\n\n"
         "Interactive elements on CURRENT page only "
         "(forms/fields/buttons/links; previous page cleared):\n"
-        f"{page_actions_text[:4000]}\n\n"
+        f"{page_actions_text[:PAGE_ACTIONS_PROMPT_CHARS]}\n\n"
         f"Recent actions:\n"
         + ("\n".join(history_lines) if history_lines else "(none)")
         + "\n\n"
         "Reminder: do not guess URLs or values; use current-page actions + text "
-        "(+ read_html when you need raw markup).\n\n"
-        f"Visible page text (truncated):\n{page_text[:4000]}\n\n"
+        "(+ read_html when you need raw markup). Page text may be a short/cached "
+        "snapshot — call extract when you need fresh page content.\n\n"
+        f"Visible page text (truncated):\n{page_text[:PAGE_TEXT_PROMPT_CHARS]}\n\n"
         "Last extract/read_html result (truncated):\n"
-        + (last_block[:8000] if last_block else "(none)\n")
+        + (last_block[:LAST_EXTRACT_PROMPT_CHARS] if last_block else "(none)\n")
     )
 
     payload = {
@@ -658,10 +668,15 @@ async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
     browser = BrowserClient()
     history: list[dict[str, Any]] = []
     last_extract = ""
-    # Only ever holds actions for the page open in this iteration (replaced on URL change).
+    # Cached page text — refreshed on URL change, every N steps, or after LLM extract.
+    page_text = ""
+    text_for_url = ""
+    steps_since_extract = EXTRACT_EVERY_N_STEPS  # force first-loop body extract
+    # Only ever holds actions for the open page; scraped on URL change or after DOM mutations.
     page_actions: list[dict[str, Any]] = []
     page_actions_text = "(none)"
     actions_for_url = ""
+    refresh_actions = True
 
     try:
         for _ in range(MAX_STEPS):
@@ -671,31 +686,48 @@ async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
             current = await browser.current()
             page_url = current.get("url") or task.current_url or "about:blank"
             page_title = current.get("title") or ""
-            try:
-                page_text = (await browser.extract("body")).get("text", "")
-            except Exception:  # noqa: BLE001
-                page_text = ""
 
-            # Interactive tags are scoped to the open page; clear when URL changes.
+            # Conditional body extract (not every loop): URL change, every N steps,
+            # or after an LLM extract resets the counter.
+            need_page_text = (
+                page_url != text_for_url
+                or steps_since_extract >= EXTRACT_EVERY_N_STEPS
+            )
+            if need_page_text:
+                try:
+                    page_text = (await browser.extract("body")).get("text", "") or ""
+                except Exception:  # noqa: BLE001
+                    if page_url != text_for_url:
+                        page_text = ""
+                text_for_url = page_url
+                steps_since_extract = 0
+            steps_since_extract += 1
+
+            # Cache /actions until URL changes (or refresh_actions after click/type/press/wait).
             if page_url != actions_for_url:
                 page_actions = []
                 page_actions_text = "(none)"
                 actions_for_url = page_url
-            try:
-                actions_payload = await browser.actions()
-                actions_url = actions_payload.get("url") or page_url
-                if actions_url != actions_for_url:
-                    page_actions = []
-                    page_actions_text = "(none)"
-                    actions_for_url = actions_url
-                    page_url = actions_url
-                raw_actions = actions_payload.get("actions") or []
-                page_actions = raw_actions if isinstance(raw_actions, list) else []
-                page_actions_text = format_page_actions_for_prompt(page_actions)
-            except Exception:  # noqa: BLE001
-                if page_url != actions_for_url:
-                    page_actions = []
-                    page_actions_text = "(none)"
+                refresh_actions = True
+
+            if refresh_actions:
+                try:
+                    actions_payload = await browser.actions()
+                    actions_url = actions_payload.get("url") or page_url
+                    if actions_url != actions_for_url:
+                        page_actions = []
+                        page_actions_text = "(none)"
+                        actions_for_url = actions_url
+                        page_url = actions_url
+                    raw_actions = actions_payload.get("actions") or []
+                    page_actions = raw_actions if isinstance(raw_actions, list) else []
+                    page_actions_text = format_page_actions_for_prompt(page_actions)
+                    refresh_actions = False
+                except Exception:  # noqa: BLE001
+                    if page_url != actions_for_url:
+                        page_actions = []
+                        page_actions_text = "(none)"
+                    # Keep refresh_actions True so the next loop retries after a transient error.
 
             vault_items = list_vault()
             vault_text = format_vault_for_prompt(vault_items)
@@ -769,6 +801,7 @@ async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
                             title=str(result.get("title") or page_title or ""),
                             note=reason or "navigated",
                         )
+                        refresh_actions = True
 
                     elif action == "click":
                         selector = decision.get("selector") or "body"
@@ -790,6 +823,7 @@ async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
                             reason=reason,
                             text=_action_text_for_selector(page_actions, str(selector)),
                         )
+                        refresh_actions = True
 
                     elif action == "type":
                         selector = decision.get("selector") or "input"
@@ -811,6 +845,7 @@ async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
                             page_url=str(type_page or ""),
                             note="typed",
                         )
+                        refresh_actions = True
 
                     elif action == "press":
                         key = decision.get("key") or "Enter"
@@ -828,6 +863,7 @@ async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
                         history.append(
                             {"action": "press", "detail": detail, "reason": reason}
                         )
+                        refresh_actions = True
 
                     elif action == "wait":
                         ms = int(decision.get("ms") or 1000)
@@ -844,11 +880,13 @@ async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
                                 "reason": reason,
                             }
                         )
+                        refresh_actions = True
 
                     elif action == "extract":
                         selector = decision.get("selector") or "body"
                         result = await browser.extract(selector)
-                        last_extract = (result.get("text") or "")[:2000]
+                        extracted_text = (result.get("text") or "")[:2000]
+                        last_extract = extracted_text
                         task.current_url = result.get("url", task.current_url)
                         detail = f"selector={selector} | text={last_extract[:160]}"
                         append_step(
@@ -858,6 +896,14 @@ async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
                         history.append(
                             {"action": "extract", "detail": detail, "reason": reason}
                         )
+                        # LLM-requested extract counts as a fresh page snapshot when on body.
+                        sel_norm = str(selector).strip().lower()
+                        if sel_norm in {"body", "html", "main", ":root"}:
+                            page_text = extracted_text
+                            text_for_url = str(
+                                task.current_url or page_url or text_for_url
+                            )
+                            steps_since_extract = 0
 
                     elif action == "read_html":
                         selector = str(decision.get("selector") or "html").strip() or "html"
