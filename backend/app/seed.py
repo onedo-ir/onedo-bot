@@ -17,7 +17,7 @@ def migrate_schema_to_single_user(engine: Engine) -> None:
         insp = inspect(conn)
         tables = set(insp.get_table_names())
 
-        for table in ("conversations", "agent_tasks", "credential_vault"):
+        for table in ("conversations", "agent_tasks"):
             if table not in tables:
                 continue
             for fk in insp.get_foreign_keys(table):
@@ -36,6 +36,10 @@ def migrate_schema_to_single_user(engine: Engine) -> None:
 
         if "users" in tables:
             statements.append("DROP TABLE IF EXISTS users CASCADE")
+
+        # Credentials moved to /data/browser/credentials.json — no panel/DB vault.
+        if "credential_vault" in tables:
+            statements.append('DROP TABLE IF EXISTS "credential_vault" CASCADE')
 
         if "app_settings" in tables:
             statements.append(

@@ -71,17 +71,6 @@ class AgentTask(Base):
     conversation: Mapped["Conversation"] = relationship(back_populates="tasks")
 
 
-class CredentialVault(Base):
-    __tablename__ = "credential_vault"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    label: Mapped[str] = mapped_column(String(255))
-    site_url: Mapped[str] = mapped_column(String(1024), default="")
-    username: Mapped[str] = mapped_column(String(255), default="")
-    secret_note: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 class AppSetting(Base):
     __tablename__ = "app_settings"
 

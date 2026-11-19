@@ -53,6 +53,20 @@ class BrowserClient:
     async def extract(self, selector: str = "body") -> dict[str, Any]:
         return await self._request("POST", "/extract", json={"selector": selector})
 
+    async def read_html(
+        self,
+        selector: str = "html",
+        query: str | None = None,
+        max_chars: int = 60000,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "selector": selector or "html",
+            "max_chars": max_chars,
+        }
+        if query:
+            payload["query"] = query
+        return await self._request("POST", "/html", json=payload)
+
     async def actions(self) -> dict[str, Any]:
         return await self._request("GET", "/actions")
 

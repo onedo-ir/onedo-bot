@@ -88,24 +88,6 @@ class TaskReply(BaseModel):
     answer: str = Field(min_length=1)
 
 
-class CredentialCreate(BaseModel):
-    label: str
-    site_url: str = ""
-    username: str = ""
-    secret_note: str = ""
-
-
-class CredentialOut(BaseModel):
-    id: int
-    label: str
-    site_url: str
-    username: str
-    secret_note: str
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
 class StatsOut(BaseModel):
     conversations_count: int
     tasks_count: int

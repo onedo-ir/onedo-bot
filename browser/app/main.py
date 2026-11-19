@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException
 from playwright.async_api import Browser, Error as PlaywrightError, Locator, Page, async_playwright
 from pydantic import BaseModel
 
+from app.html_tool import HtmlIn, collect_page_html
+
 WIDTH = 1280
 HEIGHT = 800
 
@@ -78,17 +80,17 @@ def http_playwright_error(exc: Exception) -> HTTPException:
 
 
 async def collect_page_actions(page: Page) -> list[dict[str, str]]:
-    """Visible actionable tags on the current page only (links, buttons, fields)."""
+    """Visible actionable tags on the current page only (forms, fields, links, buttons)."""
     try:
         # Raw string: a normal """...""" would corrupt JS backslash regexes.
-        # Per-kind quotas: links must not starve buttons/fields (sites often have 200+ anchors).
+        # Per-kind quotas: links must not starve forms/fields/buttons.
         items = await page.evaluate(
             r"""() => {
   const out = [];
   const seen = new Set();
-  const MAX = 140;
-  const quota = { field: 25, button: 40, link: 60, control: 15 };
-  const used = { field: 0, button: 0, link: 0, control: 0 };
+  const MAX = 160;
+  const quota = { form: 15, field: 40, button: 40, link: 50, control: 15 };
+  const used = { form: 0, field: 0, button: 0, link: 0, control: 0 };
   const isVisible = (el) => {
     if (!el || !(el instanceof Element)) return false;
     const style = window.getComputedStyle(el);
@@ -99,35 +101,79 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     return r.width > 1 && r.height > 1;
   };
   const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 120);
-  // JSON.stringify escapes quotes/backslashes safely for selector literals.
   const esc = (s) => JSON.stringify(String(s || '')).slice(1, -1);
+  const labelOf = (el) => {
+    const id = el.id || '';
+    if (id) {
+      try {
+        const lab = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+        if (lab) return clean(lab.innerText || lab.textContent || '');
+      } catch (e) {}
+    }
+    const wrap = el.closest('label');
+    if (wrap) return clean(wrap.innerText || wrap.textContent || '');
+    const labelled = el.getAttribute('aria-labelledby');
+    if (labelled) {
+      const parts = String(labelled).split(/\s+/).map((lid) => {
+        const node = document.getElementById(lid);
+        return node ? clean(node.innerText || node.textContent || '') : '';
+      }).filter(Boolean);
+      if (parts.length) return parts.join(' ');
+    }
+    return '';
+  };
   const textOf = (el) => {
-    const visual = clean(el.innerText || el.value || '');
+    const label = labelOf(el);
+    const placeholder = clean(el.getAttribute('placeholder') || '');
     const aria = clean(el.getAttribute('aria-label') || '');
-    return visual || aria || clean(
-      el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('alt') || ''
+    const visual = clean(
+      (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')
+        ? (el.value || '')
+        : (el.innerText || '')
+    );
+    return label || placeholder || aria || visual || clean(
+      el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('name') || ''
     );
   };
-  const push = (el, kind) => {
-    if (out.length >= MAX || used[kind] >= quota[kind] || !isVisible(el)) return;
+  // Fields/forms often live in closed drawers (0x0 / aria-hidden). Still list them
+  // so the agent knows which inputs exist; keep strict visibility for links/buttons.
+  const isFieldCandidate = (el) => {
+    if (!el || !(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none') return false;
+    return true;
+  };
+  const formUseful = (el) => {
+    if (!el || !(el instanceof Element)) return false;
+    if (window.getComputedStyle(el).display === 'none') return false;
+    return el.querySelectorAll(
+      'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"]'
+    ).length > 0 || isVisible(el);
+  };
+  const push = (el, kind, opts = {}) => {
+    const visibleOk = kind === 'form' ? formUseful(el) : (kind === 'field' ? isFieldCandidate(el) : isVisible(el));
+    if (out.length >= MAX || used[kind] >= quota[kind] || !visibleOk) return;
     const tag = el.tagName.toLowerCase();
-    const text = textOf(el);
-    const href = el.getAttribute('href') || '';
+    const text = opts.text != null ? clean(opts.text) : textOf(el);
+    const href = opts.href != null ? String(opts.href) : (el.getAttribute('href') || '');
     const type = (el.getAttribute('type') || '').toLowerCase();
     const role = el.getAttribute('role') || '';
     const name = el.getAttribute('name') || '';
     const id = el.id || '';
     const aria = el.getAttribute('aria-label') || '';
-    const key = [tag, kind, href, text, type, name, id, aria].join('|');
+    const placeholder = el.getAttribute('placeholder') || '';
+    const key = [tag, kind, href, text, type, name, id, aria, placeholder].join('|');
     if (seen.has(key)) return;
     seen.add(key);
     let selector = '';
     if (id) {
       selector = '#' + CSS.escape(id);
-    } else if (name && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
+    } else if (name && (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'form')) {
       selector = tag + '[name="' + esc(name) + '"]';
     } else if (href && tag === 'a') {
       selector = 'a[href="' + esc(href) + '"]';
+    } else if (placeholder && (tag === 'input' || tag === 'textarea')) {
+      selector = tag + '[placeholder="' + esc(placeholder) + '"]';
     } else if (aria) {
       selector = tag + '[aria-label="' + esc(aria) + '"]';
     } else if (text) {
@@ -140,16 +186,27 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     used[kind] += 1;
     out.push({ tag, kind, text, href, type, role, name, selector });
   };
-  // Fields and buttons first so dense link lists cannot hide them.
+  // Forms + fields first so dense link lists cannot hide them.
+  document.querySelectorAll('form').forEach((el) => {
+    const action = el.getAttribute('action') || '';
+    const fields = el.querySelectorAll(
+      'input:not([type="hidden"]), textarea, select, [contenteditable="true"]'
+    ).length;
+    const label = textOf(el) || clean(el.getAttribute('name') || el.id || 'form');
+    push(el, 'form', {
+      text: label + (fields ? (' (' + fields + ' fields)') : ''),
+      href: action,
+    });
+  });
   document.querySelectorAll(
-    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]), textarea, select'
+    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="combobox"]'
   ).forEach((el) => push(el, 'field'));
   document.querySelectorAll(
     'button, [role="button"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], input[type="reset"], input[type="image"]'
   ).forEach((el) => push(el, 'button'));
   document.querySelectorAll('a[href], [role="link"]').forEach((el) => push(el, 'link'));
   document.querySelectorAll('summary, [onclick]').forEach((el) => {
-    if (el.matches('a, button, input, textarea, select, [role="button"], [role="link"], [role="tab"], [role="menuitem"]')) return;
+    if (el.matches('a, button, input, textarea, select, form, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="textbox"], [contenteditable="true"]')) return;
     push(el, 'control');
   });
   return out;
@@ -160,7 +217,7 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     if not isinstance(items, list):
         return []
     cleaned: list[dict[str, str]] = []
-    for raw in items[:140]:
+    for raw in items[:160]:
         if not isinstance(raw, dict):
             continue
         cleaned.append(
@@ -327,6 +384,18 @@ async def extract(payload: ExtractIn):
     except PlaywrightError as exc:
         raise http_playwright_error(exc) from exc
     return {"text": text[:20000], "url": page.url}
+
+
+@app.post("/html")
+async def read_html(payload: HtmlIn):
+    """Full/cleaned HTML of the current page (or query windows) for the agent."""
+    page = await ensure_page()
+    return await collect_page_html(
+        page,
+        selector=payload.selector or "html",
+        query=payload.query,
+        max_chars=payload.max_chars,
+    )
 
 
 @app.get("/actions")

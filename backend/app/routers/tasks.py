@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 
 from app.agent_service import run_task
 from app.database import SessionLocal, get_db
-from app.models import AgentTask, CredentialVault, Message, MessageRole, TaskStatus
-from app.schemas import CredentialCreate, CredentialOut, TaskOut, TaskReply
+from app.models import AgentTask, Message, MessageRole, TaskStatus
+from app.schemas import TaskOut, TaskReply
 from app.security import PanelUser, get_current_user
 
 router = APIRouter(prefix="/api", tags=["tasks"])
@@ -71,35 +71,3 @@ def cancel_task(task_id: int, _: PanelUser = Depends(get_current_user), db: Sess
     db.commit()
     db.refresh(task)
     return task
-
-
-@router.get("/credentials", response_model=list[CredentialOut])
-def list_credentials(_: PanelUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(CredentialVault).order_by(CredentialVault.id.desc()).all()
-
-
-@router.post("/credentials", response_model=CredentialOut)
-def create_credential(
-    payload: CredentialCreate,
-    _: PanelUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    item = CredentialVault(**payload.model_dump())
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return item
-
-
-@router.delete("/credentials/{credential_id}")
-def delete_credential(
-    credential_id: int,
-    _: PanelUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    item = db.query(CredentialVault).filter(CredentialVault.id == credential_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="مورد یافت نشد")
-    db.delete(item)
-    db.commit()
-    return {"ok": True}
