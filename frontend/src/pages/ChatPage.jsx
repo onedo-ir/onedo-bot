@@ -59,6 +59,7 @@ export default function ChatPage() {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [agentWorking, setAgentWorking] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [frame, setFrame] = useState({
     image: null,
     url: "about:blank",
@@ -209,6 +210,29 @@ export default function ChatPage() {
       activeTaskIdRef.current = null;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function cancelAgent() {
+    const taskId = activeTaskIdRef.current;
+    if (!taskId || cancelling) return;
+    setCancelling(true);
+    setError("");
+    try {
+      await api.cancelTask(taskId);
+      activeTaskIdRef.current = null;
+      setAgentWorking(false);
+      if (activeId) {
+        const detail = await api.getConversation(activeId);
+        setMessages(detail.messages || []);
+      }
+    } catch (err) {
+      setError(err.message);
+      if (activeId) {
+        await syncAgentWorking(activeId);
+      }
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -423,6 +447,16 @@ export default function ChatPage() {
                     <span />
                   </span>
                   <span className="agent-loading-label">در حال انجام…</span>
+                  <button
+                    className="btn ghost danger agent-cancel-btn"
+                    type="button"
+                    onClick={cancelAgent}
+                    disabled={cancelling}
+                    aria-label="لغو کار ایجنت"
+                    title="لغو"
+                  >
+                    {cancelling ? "در حال لغو…" : "لغو"}
+                  </button>
                 </div>
               )}
             </div>

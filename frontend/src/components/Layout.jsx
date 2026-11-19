@@ -1,17 +1,19 @@
-import { Outlet, useNavigate } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../AuthContext";
 
 export default function Layout() {
   const { user, logout, setTheme } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const theme = user?.theme_preference || "dark";
+  const onSchedules = location.pathname.startsWith("/app/schedules");
 
   return (
     <div className="app-shell">
       <div className="main">
         <div className="topbar">
           <div className="topbar-start">
-            <div className="brand-mark" style={{ marginBottom: 0 }}>
+            <Link to="/app" className="brand-mark brand-link" style={{ marginBottom: 0 }}>
               <div className="brand-dot" aria-hidden="true" />
               <div>
                 <strong>Onedo</strong>
@@ -19,9 +21,12 @@ export default function Layout() {
                   به ایجنت بگو چه می‌خواهی؛ خودش وقتی لازم باشد مرورگر را کنترل می‌کند.
                 </div>
               </div>
-            </div>
+            </Link>
           </div>
           <div className="topbar-actions">
+            <Link className={`btn soft${onSchedules ? " active-nav" : ""}`} to="/app/schedules">
+              کارهای دوره‌ای
+            </Link>
             <button
               className="btn soft"
               type="button"

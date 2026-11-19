@@ -3,6 +3,7 @@ import { useAuth } from "./AuthContext";
 import Layout from "./components/Layout";
 import ChatPage from "./pages/ChatPage";
 import LoginPage from "./pages/LoginPage";
+import SchedulesPage from "./pages/SchedulesPage";
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -32,6 +33,7 @@ export default function App() {
         }
       >
         <Route index element={<ChatPage />} />
+        <Route path="schedules" element={<SchedulesPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

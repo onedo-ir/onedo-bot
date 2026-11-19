@@ -44,6 +44,8 @@
 - توقف و پرسش از کاربر هنگام ابهام/خطا
 - خلاصه متنی نتیجه در خود برنامه
 - در صورت نیاز، ایجنت اطلاعات ورود را فقط در فایل `/data/browser/credentials.json` ذخیره/می‌خواند (نه پنل، نه جدول DB)
+- پروفایل پایدار Chromium در `/data/browser/chromium-profile` (ولوم `browser_data`) نگه داشته می‌شود تا کوکی، localStorage و کش بعد از ری‌استارت از بین نروند
+- کارهای دوره‌ای: جدول `scheduled_tasks` + فایل مراحل در `/data/browser/scheduled_tasks/{id}.md`؛ ایجنت با اکشن `schedule_periodic_task` ثبت می‌کند؛ زمان‌بند بک‌اند سر `next_run_at` اجرا می‌کند؛ UI در `/app/schedules` فقط لیست/حذف
 
 ## نباید
 

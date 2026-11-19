@@ -5,7 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine
-from app.routers import admin, auth, browser, chat, tasks
+from app.routers import admin, auth, browser, chat, schedules, tasks
+from app.schedule_service import start_scheduler, stop_scheduler
 from app.schemas import HealthOut
 from app.seed import migrate_schema_to_single_user, seed_database
 
@@ -21,7 +22,11 @@ async def lifespan(_: FastAPI):
         seed_database(db)
     finally:
         db.close()
-    yield
+    await start_scheduler()
+    try:
+        yield
+    finally:
+        await stop_scheduler()
 
 
 app = FastAPI(
@@ -44,6 +49,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(tasks.router)
+app.include_router(schedules.router)
 app.include_router(admin.api_router)
 app.include_router(admin.docs_router)
 app.include_router(browser.router)

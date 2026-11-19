@@ -1,7 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.agent_service import run_task
+from app.agent_service import cancel_agent_task, run_task
 from app.database import SessionLocal, get_db
 from app.models import AgentTask, Message, MessageRole, TaskStatus
 from app.schemas import TaskOut, TaskReply
@@ -63,11 +63,9 @@ def reply_task(
 
 @router.post("/tasks/{task_id}/cancel", response_model=TaskOut)
 def cancel_task(task_id: int, _: PanelUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    task = db.query(AgentTask).filter(AgentTask.id == task_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="کار یافت نشد")
-    task.status = TaskStatus.cancelled
-    task.waiting_question = None
-    db.commit()
-    db.refresh(task)
-    return task
+    try:
+        return cancel_agent_task(db, task_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="کار یافت نشد") from None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="این کار قابل لغو نیست") from None

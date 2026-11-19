@@ -10,6 +10,11 @@ from sqlalchemy.orm import Session
 from app.browser_client import BrowserClient
 from app.config import get_settings
 from app.models import AgentTask, Message, MessageRole, TaskStatus
+from app.schedule_service import (
+    create_scheduled_task,
+    format_schedules_for_prompt,
+    list_scheduled_tasks,
+)
 
 MAX_STEPS = 15
 # Persistent file vault (no panel UI / no DB table). Shared browser_data volume.
@@ -346,6 +351,7 @@ async def call_llm_next_action(
     vault_text: str,
     page_actions_text: str = "(none)",
     last_extract: str = "",
+    schedules_text: str = "(none)",
 ) -> dict[str, Any]:
     api_key, base_url, model = resolve_ai_config()
 
@@ -363,11 +369,12 @@ async def call_llm_next_action(
         "You are Onedo bot, a careful browser agent for Persian users.\n"
         "Decide ONLY the single next action. Return STRICT JSON object with keys:\n"
         "  action: one of navigate|click|type|press|wait|extract|read_html|"
-        "save_credential|ask|done\n"
+        "save_credential|schedule_periodic_task|ask|done\n"
         "  url (navigate), selector (click/type/extract/read_html), text (type),\n"
         "  query (optional search string for read_html),\n"
         "  key (press, e.g. Enter), ms (wait), question (ask),\n"
         "  label/site_url/username/secret_note (save_credential),\n"
+        "  title/interval_minutes/steps/run_immediately (schedule_periodic_task),\n"
         "  summary (Persian, for done), reason (short).\n"
         "\n"
         "HARD GUARDRAILS (never violate):\n"
@@ -399,6 +406,17 @@ async def call_llm_next_action(
         "use read_html (optionally with query=keyword) to inspect cleaned HTML and "
         "derive a real selector from it — then click/type. Prefer query search over "
         "dumping the whole page when you know a keyword.\n"
+        "14) When the user asks to run something periodically/recurring, use "
+        "schedule_periodic_task (do NOT just say you will remember). Required fields:\n"
+        "  - title: short Persian title\n"
+        "  - interval_minutes: integer minutes between runs (min 5). "
+        "Convert phrases like every 2 hours→120, daily→1440.\n"
+        "  - steps: DETAILED Persian step-by-step playbook the future agent must follow "
+        "(URLs, clicks, fields, checks). Base steps on evidenced user intent and "
+        "current/learned page facts — never invent deep URLs/values.\n"
+        "  - run_immediately: optional bool (default false)\n"
+        "If interval or steps are unclear → ask first. After scheduling → done with "
+        "confirmation (id + interval).\n"
         "Respond with JSON only."
     )
     history_lines = []
@@ -412,6 +430,8 @@ async def call_llm_next_action(
         f"Current page URL: {page_url or 'about:blank'}\n"
         f"Current page title: {page_title or ''}\n\n"
         f"Credentials file (agent-only; /data/browser/credentials.json):\n{vault_text}\n\n"
+        "Existing periodic schedules (DB + /data/browser/scheduled_tasks/*.md):\n"
+        f"{schedules_text}\n\n"
         "Interactive elements on CURRENT page only "
         "(forms/fields/buttons/links; previous page cleared):\n"
         f"{page_actions_text[:4000]}\n\n"
@@ -471,10 +491,40 @@ def _add_assistant(db: Session, conversation_id: int, content: str) -> None:
     )
 
 
+def cancel_agent_task(db: Session, task_id: int) -> AgentTask:
+    """Mark a pending/running/waiting task cancelled and notify the chat."""
+    task = db.query(AgentTask).filter(AgentTask.id == task_id).first()
+    if not task:
+        raise LookupError("task not found")
+    if task.status not in (
+        TaskStatus.pending,
+        TaskStatus.running,
+        TaskStatus.waiting_user,
+    ):
+        raise ValueError("task not cancellable")
+
+    task.status = TaskStatus.cancelled
+    task.waiting_question = None
+    append_step(task, {"action": "cancel", "detail": "لغو توسط کاربر"})
+    _add_assistant(db, task.conversation_id, "کار لغو شد.")
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def _task_was_cancelled(db: Session, task: AgentTask) -> bool:
+    db.refresh(task)
+    return task.status == TaskStatus.cancelled
+
+
 async def run_task(db: Session, task_id: int) -> AgentTask:
     task = db.query(AgentTask).filter(AgentTask.id == task_id).first()
     if not task:
         raise ValueError("task not found")
+    if task.status == TaskStatus.cancelled:
+        return task
+    if task.status not in (TaskStatus.pending, TaskStatus.running):
+        return task
 
     task.status = TaskStatus.running
     task.waiting_question = None
@@ -490,6 +540,9 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
 
     try:
         for _ in range(MAX_STEPS):
+            if _task_was_cancelled(db, task):
+                return task
+
             current = await browser.current()
             page_url = current.get("url") or task.current_url or "about:blank"
             page_title = current.get("title") or ""
@@ -521,6 +574,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
 
             vault_items = list_vault()
             vault_text = format_vault_for_prompt(vault_items)
+            schedules_text = format_schedules_for_prompt(list_scheduled_tasks(db))
             decision = await call_llm_next_action(
                 task.instruction,
                 page_url,
@@ -530,6 +584,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 vault_text,
                 page_actions_text,
                 last_extract,
+                schedules_text,
             )
             decision = apply_decision_guardrails(
                 decision,
@@ -541,6 +596,9 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 last_extract=last_extract,
                 page_actions_text=page_actions_text,
             )
+            if _task_was_cancelled(db, task):
+                return task
+
             action = (decision.get("action") or "").lower().strip()
             reason = decision.get("reason") or ""
 
@@ -712,7 +770,79 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                     {"action": "save_credential", "detail": detail, "reason": reason}
                 )
 
+            elif action == "schedule_periodic_task":
+                title = str(decision.get("title") or "").strip()
+                steps = str(decision.get("steps") or "").strip()
+                raw_interval = decision.get("interval_minutes")
+                run_immediately = bool(decision.get("run_immediately") or False)
+                try:
+                    interval_ok = int(raw_interval) >= 5
+                except (TypeError, ValueError):
+                    interval_ok = False
+                if not title or not steps or not interval_ok:
+                    task.status = TaskStatus.waiting_user
+                    task.waiting_question = (
+                        "برای کار دوره‌ای عنوان، فاصلهٔ زمانی (حداقل ۵ دقیقه) "
+                        "و مراحل دقیق را مشخص کنید."
+                    )
+                    append_step(
+                        task,
+                        {
+                            "action": "schedule_periodic_task_ask",
+                            "detail": task.waiting_question,
+                            "reason": reason or "missing_fields",
+                        },
+                    )
+                    _add_assistant(db, task.conversation_id, task.waiting_question)
+                    db.commit()
+                    db.refresh(task)
+                    return task
+                try:
+                    scheduled = create_scheduled_task(
+                        db,
+                        title=title,
+                        interval_minutes=int(raw_interval),
+                        steps=steps,
+                        run_immediately=run_immediately,
+                    )
+                except ValueError as exc:
+                    task.status = TaskStatus.waiting_user
+                    task.waiting_question = f"ثبت کار دوره‌ای ممکن نشد: {exc}"
+                    append_step(
+                        task,
+                        {
+                            "action": "schedule_periodic_task_error",
+                            "detail": str(exc),
+                            "reason": reason,
+                        },
+                    )
+                    _add_assistant(db, task.conversation_id, task.waiting_question)
+                    db.commit()
+                    db.refresh(task)
+                    return task
+                detail = (
+                    f"id={scheduled.id} every={scheduled.interval_minutes}m "
+                    f"next={scheduled.next_run_at} file={scheduled.steps_file}"
+                )
+                append_step(
+                    task,
+                    {
+                        "action": "schedule_periodic_task",
+                        "detail": detail,
+                        "reason": reason,
+                    },
+                )
+                history.append(
+                    {
+                        "action": "schedule_periodic_task",
+                        "detail": detail,
+                        "reason": reason,
+                    }
+                )
+
             elif action == "ask":
+                if _task_was_cancelled(db, task):
+                    return task
                 task.status = TaskStatus.waiting_user
                 task.waiting_question = (
                     decision.get("question") or "برای ادامه راهنمایی کنید."
@@ -727,6 +857,8 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 return task
 
             elif action == "done":
+                if _task_was_cancelled(db, task):
+                    return task
                 summary = (
                     decision.get("summary")
                     or last_extract
@@ -744,6 +876,8 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 return task
 
             else:
+                if _task_was_cancelled(db, task):
+                    return task
                 append_step(
                     task,
                     {
@@ -764,6 +898,9 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
 
             db.commit()
 
+        if _task_was_cancelled(db, task):
+            return task
+
         extract = await browser.extract("body")
         task.current_url = (await browser.current()).get("url", task.current_url)
         task.summary = (last_extract or extract.get("text") or "سقف مراحل ایجنت تمام شد.")[
@@ -774,6 +911,8 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
         _add_assistant(db, task.conversation_id, task.summary[:800])
         db.commit()
     except Exception as exc:  # noqa: BLE001
+        if _task_was_cancelled(db, task):
+            return task
         task.status = TaskStatus.waiting_user
         task.waiting_question = (
             f"خطا رخ داد: {exc}. چطور ادامه بدهم؟ می‌توانید راهنمایی کنید یا کار را لغو کنید."

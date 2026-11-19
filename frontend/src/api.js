@@ -51,6 +51,7 @@ export const api = {
     }),
   tasks: () => request("/api/tasks"),
   getTask: (id) => request(`/api/tasks/${id}`),
+  cancelTask: (id) => request(`/api/tasks/${id}/cancel`, { method: "POST" }),
   browserStatus: () => request("/api/browser/status"),
   browserReset: () => request("/api/browser/reset", { method: "POST" }),
   browserNavigate: (url) =>
@@ -80,4 +81,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  scheduledTasks: () => request("/api/scheduled-tasks"),
+  getScheduledTask: (id) => request(`/api/scheduled-tasks/${id}`),
+  deleteScheduledTask: (id) =>
+    request(`/api/scheduled-tasks/${id}`, { method: "DELETE" }),
 };

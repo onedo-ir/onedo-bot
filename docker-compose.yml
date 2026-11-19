@@ -57,6 +57,7 @@ services:
     networks:
       - onedo-net
     volumes:
+      # credentials.json + chromium-profile (cookies/cache/sessions)
       - browser_data:/data/browser
     shm_size: "1gb"
     restart: unless-stopped

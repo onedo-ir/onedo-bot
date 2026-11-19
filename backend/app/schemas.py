@@ -106,6 +106,22 @@ class HealthOut(BaseModel):
     app: str
 
 
+class ScheduledTaskOut(BaseModel):
+    id: int
+    title: str
+    interval_minutes: int
+    steps_file: str
+    enabled: bool
+    next_run_at: datetime
+    last_run_at: datetime | None
+    last_task_id: int | None
+    created_at: datetime
+    updated_at: datetime
+    steps_preview: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class BrowserAction(BaseModel):
     action: str
     payload: dict[str, Any] = {}

@@ -1,17 +1,20 @@
 import base64
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from playwright.async_api import Browser, Error as PlaywrightError, Locator, Page, async_playwright
+from playwright.async_api import BrowserContext, Error as PlaywrightError, Locator, Page, async_playwright
 from pydantic import BaseModel
 
 from app.html_tool import HtmlIn, collect_page_html
 
 WIDTH = 1280
 HEIGHT = 800
+# Shared docker volume browser_data → cookies, localStorage, cache survive restarts.
+USER_DATA_DIR = Path("/data/browser/chromium-profile")
 
-state: dict[str, Any] = {"playwright": None, "browser": None, "page": None}
+state: dict[str, Any] = {"playwright": None, "context": None, "page": None}
 
 
 class NavigateIn(BaseModel):
@@ -67,8 +70,8 @@ def clamp_point(x: float, y: float) -> tuple[int, int]:
 
 async def ensure_page() -> Page:
     page: Page | None = state.get("page")
-    browser: Browser | None = state.get("browser")
-    if page is None or browser is None:
+    context: BrowserContext | None = state.get("context")
+    if page is None or context is None:
         raise HTTPException(status_code=503, detail="browser not ready")
     return page
 
@@ -265,22 +268,24 @@ async def first_actionable(page: Page, selector: str, timeout: int = 12000) -> L
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
+    # Persistent profile keeps cookies / localStorage / HTTP cache across container restarts.
+    context = await pw.chromium.launch_persistent_context(
+        user_data_dir=str(USER_DATA_DIR),
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
-    )
-    context = await browser.new_context(
         viewport={"width": WIDTH, "height": HEIGHT},
         locale="fa-IR",
+        accept_downloads=False,
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
     )
-    page = await context.new_page()
+    page = context.pages[0] if context.pages else await context.new_page()
     await page.goto("about:blank")
     state["playwright"] = pw
-    state["browser"] = browser
+    state["context"] = context
     state["page"] = page
     yield
-    await browser.close()
+    await context.close()
     await pw.stop()
 
 

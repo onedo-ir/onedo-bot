@@ -4,10 +4,12 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 import yaml
 
+from app.agent_service import cancel_agent_task
 from app.config import get_settings
 from app.database import get_db
-from app.models import AgentTask, Conversation, TaskStatus
-from app.schemas import AgentConfigOut, StatsOut, TaskOut
+from app.models import AgentTask, Conversation, ScheduledTask, TaskStatus
+from app.schedule_service import delete_scheduled_task, list_scheduled_tasks, read_steps_file
+from app.schemas import AgentConfigOut, ScheduledTaskOut, StatsOut, TaskOut
 from app.security import verify_admin_api_token
 
 settings = get_settings()
@@ -47,6 +49,44 @@ def _get_agent_config() -> AgentConfigOut:
     )
 
 
+def _cancel_task(db: Session, task_id: int) -> AgentTask:
+    try:
+        return cancel_agent_task(db, task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="کار یافت نشد") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="این کار قابل لغو نیست") from exc
+
+
+def _scheduled_out(row: ScheduledTask) -> ScheduledTaskOut:
+    text = read_steps_file(row.steps_file)
+    return ScheduledTaskOut(
+        id=row.id,
+        title=row.title,
+        interval_minutes=row.interval_minutes,
+        steps_file=row.steps_file,
+        enabled=row.enabled,
+        next_run_at=row.next_run_at,
+        last_run_at=row.last_run_at,
+        last_task_id=row.last_task_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        steps_preview=(text[:2000] if text else ""),
+    )
+
+
+def _list_scheduled(db: Session) -> list[ScheduledTaskOut]:
+    return [_scheduled_out(row) for row in list_scheduled_tasks(db)]
+
+
+def _delete_scheduled(db: Session, schedule_id: int) -> dict:
+    try:
+        delete_scheduled_task(db, schedule_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="کار دوره‌ای یافت نشد") from exc
+    return {"ok": True}
+
+
 @api_router.get("/stats", response_model=StatsOut)
 def api_stats(db: Session = Depends(get_db)):
     return _stats(db)
@@ -57,9 +97,24 @@ def api_tasks(db: Session = Depends(get_db)):
     return _list_tasks(db)
 
 
+@api_router.post("/tasks/{task_id}/cancel", response_model=TaskOut)
+def api_cancel_task(task_id: int, db: Session = Depends(get_db)):
+    return _cancel_task(db, task_id)
+
+
 @api_router.get("/agent-config", response_model=AgentConfigOut)
 def api_agent_config():
     return _get_agent_config()
+
+
+@api_router.get("/scheduled-tasks", response_model=list[ScheduledTaskOut])
+def api_list_scheduled(db: Session = Depends(get_db)):
+    return _list_scheduled(db)
+
+
+@api_router.delete("/scheduled-tasks/{schedule_id}")
+def api_delete_scheduled(schedule_id: int, db: Session = Depends(get_db)):
+    return _delete_scheduled(db, schedule_id)
 
 
 def build_openapi_document() -> dict:
@@ -105,10 +160,51 @@ def build_openapi_document() -> dict:
                     "responses": {"200": {"description": "OK"}},
                 }
             },
+            "/api/admin-api/tasks/{task_id}/cancel": {
+                "post": {
+                    "summary": "لغو کار ایجنت (pending/running/waiting_user)",
+                    "parameters": [
+                        {
+                            "name": "task_id",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "integer"},
+                        }
+                    ],
+                    "responses": {
+                        "200": {"description": "OK"},
+                        "400": {"description": "قابل لغو نیست"},
+                        "404": {"description": "یافت نشد"},
+                    },
+                }
+            },
             "/api/admin-api/agent-config": {
                 "get": {
                     "summary": "تنظیمات مدل AI (فقط خواندنی از env)",
                     "responses": {"200": {"description": "OK"}},
+                }
+            },
+            "/api/admin-api/scheduled-tasks": {
+                "get": {
+                    "summary": "فهرست کارهای دوره‌ای ایجنت",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            },
+            "/api/admin-api/scheduled-tasks/{schedule_id}": {
+                "delete": {
+                    "summary": "حذف کار دوره‌ای و فایل مراحل",
+                    "parameters": [
+                        {
+                            "name": "schedule_id",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "integer"},
+                        }
+                    ],
+                    "responses": {
+                        "200": {"description": "OK"},
+                        "404": {"description": "یافت نشد"},
+                    },
                 }
             },
             f"/api/{token}/docs/openapi.yml": {

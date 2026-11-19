@@ -33,7 +33,7 @@ docker compose up -d --build
 - **nginx**: تنها سرویس با پورت میزبان `12277`؛ پروکسی به frontend و backend
 - **frontend**: React (Vite) با UI فارسی RTL
 - **backend**: FastAPI + JWT تک‌کاربره + Admin REST API
-- **browser**: Chromium از طریق Playwright برای اجرای اکشن‌های مرورگر و اسکرین‌شات زنده
+- **browser**: Chromium از طریق Playwright برای اجرای اکشن‌های مرورگر و اسکرین‌شات زنده؛ پروفایل/سشن/کش روی ولوم `browser_data` (`/data/browser/chromium-profile`) پایدار است
 - **db**: PostgreSQL (فقط شبکه داخلی Compose)
 
 ## تنظیمات AI
@@ -66,6 +66,7 @@ curl -H "X-Admin-Token: $ADMIN_API_TOKEN" http://localhost:12277/api/admin-api/s
 5. **کاربر**: تک‌کاربره؛ اعتبار از `.env`؛ بدون منوی کناری و بدون صفحه تاریخچه کارها.
 6. **خطا/ابهام**: کار متوقف می‌شود (`waiting_user`) و در چت سؤال می‌پرسد.
 7. **نتیجه**: خلاصه متنی در همان گفتگو.
+8. **کار دوره‌ای**: از چت ثبت می‌شود؛ فایل مراحل روی ولوم `browser_data`؛ مشاهده/حذف در `/app/schedules`.
 
 ## توسعه
 
