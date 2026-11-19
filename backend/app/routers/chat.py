@@ -3,9 +3,9 @@ from sqlalchemy.orm import Session
 
 from app.agent_service import run_task
 from app.database import SessionLocal, get_db
-from app.models import AgentTask, Conversation, Message, MessageRole, TaskStatus, User
+from app.models import AgentTask, Conversation, Message, MessageRole, TaskStatus
 from app.schemas import ConversationCreate, ConversationDetail, ConversationOut, MessageCreate, MessageOut, TaskOut
-from app.security import get_current_user
+from app.security import PanelUser, get_current_user
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -19,22 +19,17 @@ async def _run_task_background(task_id: int) -> None:
 
 
 @router.get("/conversations", response_model=list[ConversationOut])
-def list_conversations(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return (
-        db.query(Conversation)
-        .filter(Conversation.user_id == user.id)
-        .order_by(Conversation.updated_at.desc())
-        .all()
-    )
+def list_conversations(_: PanelUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(Conversation).order_by(Conversation.updated_at.desc()).all()
 
 
 @router.post("/conversations", response_model=ConversationOut)
 def create_conversation(
     payload: ConversationCreate,
-    user: User = Depends(get_current_user),
+    _: PanelUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    conv = Conversation(user_id=user.id, title=payload.title or "گفتگوی جدید")
+    conv = Conversation(title=payload.title or "گفتگوی جدید")
     db.add(conv)
     db.commit()
     db.refresh(conv)
@@ -44,14 +39,10 @@ def create_conversation(
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
 def get_conversation(
     conversation_id: int,
-    user: User = Depends(get_current_user),
+    _: PanelUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    conv = (
-        db.query(Conversation)
-        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
-        .first()
-    )
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
     if not conv:
         raise HTTPException(status_code=404, detail="گفتگو یافت نشد")
     return conv
@@ -60,14 +51,10 @@ def get_conversation(
 @router.delete("/conversations/{conversation_id}")
 def delete_conversation(
     conversation_id: int,
-    user: User = Depends(get_current_user),
+    _: PanelUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    conv = (
-        db.query(Conversation)
-        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
-        .first()
-    )
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
     if not conv:
         raise HTTPException(status_code=404, detail="گفتگو یافت نشد")
     db.delete(conv)
@@ -80,14 +67,10 @@ def send_message(
     conversation_id: int,
     payload: MessageCreate,
     background_tasks: BackgroundTasks,
-    user: User = Depends(get_current_user),
+    _: PanelUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    conv = (
-        db.query(Conversation)
-        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
-        .first()
-    )
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
     if not conv:
         raise HTTPException(status_code=404, detail="گفتگو یافت نشد")
 
@@ -111,12 +94,6 @@ def send_message(
         waiting.instruction = f"{waiting.instruction}\n\nپاسخ کاربر: {payload.content.strip()}"
         waiting.status = TaskStatus.pending
         waiting.waiting_question = None
-        assistant = Message(
-            conversation_id=conv.id,
-            role=MessageRole.assistant,
-            content="باشه، با راهنمایی شما ادامه می‌دهم…",
-        )
-        db.add(assistant)
         db.commit()
         db.refresh(waiting)
         background_tasks.add_task(_run_task_background, waiting.id)
@@ -124,17 +101,10 @@ def send_message(
 
     task = AgentTask(
         conversation_id=conv.id,
-        user_id=user.id,
         instruction=payload.content.strip(),
         status=TaskStatus.pending,
     )
     db.add(task)
-    assistant = Message(
-        conversation_id=conv.id,
-        role=MessageRole.assistant,
-        content="دستور را به ایجنت هوش مصنوعی دادم. هر جا لازم باشد خودش به مرورگر وصل می‌شود و قدم‌به‌قدم جلو می‌رود…",
-    )
-    db.add(assistant)
     db.commit()
     db.refresh(task)
     background_tasks.add_task(_run_task_background, task.id)

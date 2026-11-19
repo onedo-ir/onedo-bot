@@ -1,14 +1,20 @@
 # راهنمای ایجنت‌ها — Onedo bot
 
-این فایل برای انسان‌ها و ایجنت‌های کدنویس است. قبل از افزودن قابلیت ادمین بخوانید.
+این فایل برای انسان‌ها و ایجنت‌های کدنویس است.
+
+## مدل دسترسی
+
+- پنل **تک‌کاربره** است؛ جدول کاربر و ثبت‌نام وجود ندارد.
+- تنها کاربر از `.env` خوانده می‌شود: `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD`.
+- تنظیمات OpenAI فقط از env: `OPENAI_COMPATIBLE_BASE_URL`، `OPENAI_COMPATIBLE_API_KEY`، `OPENAI_COMPATIBLE_MODEL` — در UI قابل تغییر نیستند.
+- بخش مدیریت وب (`/app/admin`) حذف شده است.
 
 ## قانون اجباری Admin API
 
-**هر قابلیت یا اکشن ادمینی که به پروژه اضافه می‌شود باید هم‌زمان در هر سه جا ثبت شود:**
+**هر اکشن عملیاتی/ادمین که به پروژه اضافه می‌شود باید هم‌زمان در هر دو جا ثبت شود:**
 
-1. **پنل ادمین وب** (`/app/admin` و روتر `/api/admin/...` با JWT نقش admin)
-2. **REST API خارجی** (`/api/admin-api/...` محافظت‌شده با `ADMIN_API_TOKEN`)
-3. **داکیومنت OpenAPI** که از `build_openapi_document()` در `backend/app/routers/admin.py` ساخته می‌شود و روی مسیر زیر بدون ورود در دسترس است:
+1. **REST API خارجی** (`/api/admin-api/...` محافظت‌شده با `ADMIN_API_TOKEN`)
+2. **داکیومنت OpenAPI** که از `build_openapi_document()` در `backend/app/routers/admin.py` ساخته می‌شود و روی مسیر زیر بدون ورود در دسترس است:
 
 ```text
 /api/<ADMIN_API_TOKEN>/docs/openapi.yml
@@ -25,10 +31,10 @@
 ## هنگام افزودن اکشن جدید
 
 1. منطق مشترک را در تابع کمکی داخل `backend/app/routers/admin.py` بنویسید.
-2. یک endpoint در `panel_router` و همان را در `api_router` expose کنید.
+2. endpoint را در `api_router` expose کنید.
 3. path/method/summary را به `build_openapi_document()` اضافه کنید.
-4. در صورت نیاز UI پنل را در `frontend/src/pages/AdminPage.jsx` به‌روز کنید.
-5. اگر متغیر env جدید لازم است، به `.env.example` و README هم اضافه کنید.
+4. اگر متغیر env جدید لازم است، به `.env.example` و README هم اضافه کنید.
+5. تنظیمات مدل AI را در UI یا دیتابیس قابل‌ویرایش نکنید؛ فقط از env بخوانید.
 
 ## محدوده پروژه
 
@@ -41,4 +47,5 @@
 ## نباید
 
 - پورت خارجی برای backend/frontend/db/browser باز نکنید؛ فقط nginx روی `12277`.
-- اکشن ادمین را فقط در UI اضافه نکنید بدون API و OpenAPI.
+- جدول/ثبت‌نام چندکاربره یا پنل مدیریت کاربر اضافه نکنید.
+- اکشن ادمین را فقط در کد پنهان نکنید بدون Admin API و OpenAPI.

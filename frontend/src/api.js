@@ -37,10 +37,8 @@ async function request(path, options = {}) {
 
 export const api = {
   health: () => request("/api/health"),
-  register: (body) => request("/api/auth/register", { method: "POST", body: JSON.stringify(body) }),
   login: (body) => request("/api/auth/login", { method: "POST", body: JSON.stringify(body) }),
   me: () => request("/api/auth/me"),
-  updateMe: (body) => request("/api/auth/me", { method: "PATCH", body: JSON.stringify(body) }),
   conversations: () => request("/api/chat/conversations"),
   createConversation: (title = "گفتگوی جدید") =>
     request("/api/chat/conversations", { method: "POST", body: JSON.stringify({ title }) }),
@@ -61,14 +59,4 @@ export const api = {
   deleteCredential: (id) => request(`/api/credentials/${id}`, { method: "DELETE" }),
   browserStatus: () => request("/api/browser/status"),
   browserReset: () => request("/api/browser/reset", { method: "POST" }),
-  adminStats: () => request("/api/admin/stats"),
-  adminUsers: () => request("/api/admin/users"),
-  adminCreateUser: (body) =>
-    request("/api/admin/users", { method: "POST", body: JSON.stringify(body) }),
-  adminUpdateUser: (id, body) =>
-    request(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  adminTasks: () => request("/api/admin/tasks"),
-  agentConfig: () => request("/api/admin/agent-config"),
-  updateAgentConfig: (body) =>
-    request("/api/admin/agent-config", { method: "PUT", body: JSON.stringify(body) }),
 };

@@ -4,14 +4,13 @@ import json
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from app.browser_client import BrowserClient
-from app.models import User
-from app.security import get_current_user
+from app.security import PanelUser, get_current_user
 
 router = APIRouter(tags=["browser"])
 
 
 @router.get("/api/browser/status")
-async def browser_status(user: User = Depends(get_current_user)):
+async def browser_status(user: PanelUser = Depends(get_current_user)):
     client = BrowserClient()
     health = await client.health()
     current = {}
@@ -23,7 +22,7 @@ async def browser_status(user: User = Depends(get_current_user)):
 
 
 @router.post("/api/browser/reset")
-async def browser_reset(user: User = Depends(get_current_user)):
+async def browser_reset(_: PanelUser = Depends(get_current_user)):
     client = BrowserClient()
     return await client.reset()
 

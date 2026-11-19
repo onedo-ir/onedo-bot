@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 
 export default function ChatPage() {
@@ -10,7 +10,6 @@ export default function ChatPage() {
   const [frame, setFrame] = useState({ image: null, url: "about:blank", title: "" });
   const [error, setError] = useState("");
   const [showConvs, setShowConvs] = useState(false);
-  const bottomRef = useRef(null);
 
   async function loadConversations(selectId) {
     const list = await api.conversations();
@@ -29,10 +28,6 @@ export default function ChatPage() {
   useEffect(() => {
     loadConversations().catch((err) => setError(err.message));
   }, []);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   useEffect(() => {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
@@ -156,7 +151,6 @@ export default function ChatPage() {
                   {m.content}
                 </div>
               ))}
-              <div ref={bottomRef} />
             </div>
             {error && <div className="error-box" style={{ margin: "0 12px" }}>{error}</div>}
             <div className="composer">

@@ -63,14 +63,6 @@ export default function Layout() {
           >
             حساب‌ها
           </NavLink>
-          {user?.role === "admin" && (
-            <NavLink
-              className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}
-              to="/app/admin"
-            >
-              مدیریت
-            </NavLink>
-          )}
         </nav>
 
         <div className="sidebar-footer stack">

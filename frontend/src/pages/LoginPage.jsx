@@ -5,8 +5,8 @@ import { useAuth } from "../AuthContext";
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("admin@onedo.local");
-  const [password, setPassword] = useState("Admin123!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -32,12 +32,18 @@ export default function LoginPage() {
           <h1>ورود</h1>
         </div>
         <p className="muted" style={{ marginTop: 0 }}>
-          با ایمیل وارد شو تا ایجنت و نمای زندهٔ مرورگر آماده باشد.
+          با همان حساب تعریف‌شده در فایل .env وارد شوید.
         </p>
         {error && <div className="error-box">{error}</div>}
         <label>
           ایمیل
-          <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required />
+          <input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            type="text"
+            autoComplete="username"
+            required
+          />
         </label>
         <label>
           رمز عبور
@@ -45,6 +51,7 @@ export default function LoginPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             type="password"
+            autoComplete="current-password"
             required
           />
         </label>
@@ -52,7 +59,7 @@ export default function LoginPage() {
           {busy ? "در حال ورود…" : "ورود"}
         </button>
         <div className="muted">
-          حساب نداری؟ <Link to="/register">ثبت‌نام</Link>
+          <Link to="/">بازگشت</Link>
         </div>
       </form>
     </div>

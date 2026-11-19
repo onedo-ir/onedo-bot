@@ -7,25 +7,16 @@ from sqlalchemy.orm import Session
 
 from app.browser_client import BrowserClient
 from app.config import get_settings
-from app.models import AgentTask, AppSetting, Message, MessageRole, TaskStatus
+from app.models import AgentTask, Message, MessageRole, TaskStatus
 
 MAX_STEPS = 15
 
 
-def get_setting(db: Session, key: str, default: str = "") -> str:
-    row = db.query(AppSetting).filter(AppSetting.key == key).first()
-    if row and (row.value or "").strip():
-        return row.value.strip()
-    return default
-
-
-def resolve_ai_config(db: Session) -> tuple[str, str, str]:
+def resolve_ai_config() -> tuple[str, str, str]:
     settings = get_settings()
-    api_key = get_setting(db, "ai_api_key", settings.openai_compatible_api_key)
-    base_url = get_setting(
-        db, "ai_base_url", settings.openai_compatible_base_url
-    ).rstrip("/")
-    model = get_setting(db, "ai_model", settings.openai_compatible_model)
+    api_key = (settings.openai_compatible_api_key or "").strip()
+    base_url = (settings.openai_compatible_base_url or "").rstrip("/")
+    model = (settings.openai_compatible_model or "auto").strip() or "auto"
     return api_key, base_url, model
 
 
@@ -59,21 +50,20 @@ def parse_llm_json(content: str) -> dict[str, Any]:
 
 
 async def call_llm_next_action(
-    db: Session,
     instruction: str,
     page_url: str,
     page_title: str,
     page_text: str,
     history: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    api_key, base_url, model = resolve_ai_config(db)
+    api_key, base_url, model = resolve_ai_config()
 
     if not api_key:
         return {
             "action": "ask",
             "question": (
-                "کلید API ایجنت تنظیم نشده. از پنل ادمین یا متغیر "
-                "OPENAI_COMPATIBLE_API_KEY آن را تنظیم کنید."
+                "کلید API ایجنت تنظیم نشده. متغیر محیطی "
+                "OPENAI_COMPATIBLE_API_KEY را در .env تنظیم کنید."
             ),
             "reason": "missing_api_key",
         }
@@ -181,7 +171,6 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 page_text = ""
 
             decision = await call_llm_next_action(
-                db,
                 task.instruction,
                 page_url,
                 page_title,
@@ -246,11 +235,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                     task,
                     {"action": "ask", "detail": task.waiting_question, "reason": reason},
                 )
-                _add_assistant(
-                    db,
-                    task.conversation_id,
-                    f"⏸ کار متوقف شد.\n{task.waiting_question}",
-                )
+                _add_assistant(db, task.conversation_id, task.waiting_question)
                 db.commit()
                 db.refresh(task)
                 return task
@@ -265,7 +250,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 task.current_url = (await browser.current()).get("url", task.current_url)
                 task.status = TaskStatus.completed
                 append_step(task, {"action": "done", "detail": "کار تمام شد", "reason": reason})
-                _add_assistant(db, task.conversation_id, f"✅ خلاصه نتیجه:\n{task.summary}")
+                _add_assistant(db, task.conversation_id, task.summary)
                 db.commit()
                 db.refresh(task)
                 return task
@@ -284,7 +269,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 task.waiting_question = (
                     "ایجنت پاسخ نامشخصی از مدل گرفت. چطور ادامه بدهم؟"
                 )
-                _add_assistant(db, task.conversation_id, f"⚠ {task.waiting_question}")
+                _add_assistant(db, task.conversation_id, task.waiting_question)
                 db.commit()
                 db.refresh(task)
                 return task
@@ -298,11 +283,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
         ]
         task.status = TaskStatus.completed
         append_step(task, {"action": "done", "detail": "سقف مراحل"})
-        _add_assistant(
-            db,
-            task.conversation_id,
-            f"✅ به سقف مراحل رسیدم. خلاصه تا اینجا:\n{task.summary[:800]}",
-        )
+        _add_assistant(db, task.conversation_id, task.summary[:800])
         db.commit()
     except Exception as exc:  # noqa: BLE001
         task.status = TaskStatus.waiting_user
@@ -310,7 +291,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
             f"خطا رخ داد: {exc}. چطور ادامه بدهم؟ می‌توانید راهنمایی کنید یا کار را لغو کنید."
         )
         append_step(task, {"action": "error", "detail": str(exc)})
-        _add_assistant(db, task.conversation_id, f"⚠ {task.waiting_question}")
+        _add_assistant(db, task.conversation_id, task.waiting_question)
         db.commit()
 
     db.refresh(task)

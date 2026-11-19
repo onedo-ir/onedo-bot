@@ -24,14 +24,9 @@ export default function LandingPage() {
               ادامه در میز کار
             </Link>
           ) : (
-            <>
-              <Link className="btn" to="/login">
-                ورود
-              </Link>
-              <Link className="btn ghost" to="/register">
-                ساخت حساب
-              </Link>
-            </>
+            <Link className="btn" to="/login">
+              ورود
+            </Link>
           )}
         </div>
       </div>

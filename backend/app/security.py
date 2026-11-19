@@ -1,29 +1,39 @@
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from secrets import compare_digest
 
-import bcrypt
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.database import get_db
-from app.models import User, UserRole
 
 bearer_scheme = HTTPBearer(auto_error=False)
 admin_api_header = APIKeyHeader(name="X-Admin-Token", auto_error=False)
 settings = get_settings()
 
 
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+@dataclass(frozen=True)
+class PanelUser:
+    email: str
+    full_name: str
+    theme_preference: str = "dark"
 
 
-def verify_password(plain: str, hashed: str) -> bool:
-    try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except ValueError:
+def get_panel_user() -> PanelUser:
+    email = (settings.default_admin_email or "").strip().lower()
+    name = email.split("@")[0] if email else "مدیر"
+    return PanelUser(email=email, full_name=name or "مدیر", theme_preference="dark")
+
+
+def verify_panel_credentials(email: str, password: str) -> bool:
+    expected_email = (settings.default_admin_email or "").strip().lower()
+    expected_password = settings.default_admin_password or ""
+    if not expected_email or not expected_password:
         return False
+    return compare_digest(email.strip().lower(), expected_email) and compare_digest(
+        password, expected_password
+    )
 
 
 def create_access_token(subject: str) -> str:
@@ -37,8 +47,7 @@ def create_access_token(subject: str) -> str:
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
-) -> User:
+) -> PanelUser:
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="ورود لازم است")
     try:
@@ -53,16 +62,10 @@ def get_current_user(
     except JWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="توکن نامعتبر") from exc
 
-    user = db.query(User).filter(User.email == email).first()
-    if not user or not user.is_active:
+    panel = get_panel_user()
+    if not panel.email or email.strip().lower() != panel.email:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="کاربر یافت نشد")
-    return user
-
-
-def get_admin_user(user: User = Depends(get_current_user)) -> User:
-    if user.role != UserRole.admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="دسترسی ادمین لازم است")
-    return user
+    return panel
 
 
 def verify_admin_api_token(

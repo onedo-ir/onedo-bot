@@ -3,6 +3,11 @@ import { api, clearToken, getToken, setToken } from "./api";
 
 const AuthContext = createContext(null);
 const DEFAULT_THEME = "dark";
+const THEME_KEY = "onedo_theme";
+
+function readStoredTheme() {
+  return localStorage.getItem(THEME_KEY) || DEFAULT_THEME;
+}
 
 function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme || DEFAULT_THEME);
@@ -11,29 +16,30 @@ function applyTheme(theme) {
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [theme, setThemeState] = useState(readStoredTheme);
 
   async function refresh() {
     if (!getToken()) {
       setUser(null);
-      applyTheme(DEFAULT_THEME);
+      applyTheme(readStoredTheme());
       setLoading(false);
       return;
     }
     try {
       const me = await api.me();
-      setUser(me);
-      applyTheme(me.theme_preference || DEFAULT_THEME);
+      setUser({ ...me, theme_preference: readStoredTheme() });
+      applyTheme(readStoredTheme());
     } catch {
       clearToken();
       setUser(null);
-      applyTheme(DEFAULT_THEME);
+      applyTheme(readStoredTheme());
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    applyTheme(DEFAULT_THEME);
+    applyTheme(readStoredTheme());
     refresh();
   }, []);
 
@@ -43,25 +49,22 @@ export function AuthProvider({ children }) {
     await refresh();
   }
 
-  async function register(payload) {
-    await api.register(payload);
-    await login(payload.email, payload.password);
-  }
-
   function logout() {
     clearToken();
     setUser(null);
-    applyTheme(DEFAULT_THEME);
+    applyTheme(readStoredTheme());
   }
 
-  async function setTheme(theme) {
-    const updated = await api.updateMe({ theme_preference: theme });
-    setUser(updated);
-    applyTheme(theme);
+  function setTheme(next) {
+    const value = next === "light" ? "light" : "dark";
+    localStorage.setItem(THEME_KEY, value);
+    setThemeState(value);
+    applyTheme(value);
+    setUser((prev) => (prev ? { ...prev, theme_preference: value } : prev));
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, setTheme, refresh }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, setTheme, theme, refresh }}>
       {children}
     </AuthContext.Provider>
   );

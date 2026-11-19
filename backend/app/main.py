@@ -7,13 +7,14 @@ from app.config import get_settings
 from app.database import Base, SessionLocal, engine
 from app.routers import admin, auth, browser, chat, tasks
 from app.schemas import HealthOut
-from app.seed import seed_database
+from app.seed import migrate_schema_to_single_user, seed_database
 
 settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    migrate_schema_to_single_user(engine)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
@@ -43,7 +44,6 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(tasks.router)
-app.include_router(admin.panel_router)
 app.include_router(admin.api_router)
 app.include_router(admin.docs_router)
 app.include_router(browser.router)
