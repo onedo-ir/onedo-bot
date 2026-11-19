@@ -167,6 +167,7 @@ export default function AdminPage() {
       </form>
 
       <h3>کاربران</h3>
+      <div style={{ overflowX: "auto" }}>
       <table className="table">
         <thead>
           <tr>
@@ -197,8 +198,10 @@ export default function AdminPage() {
           ))}
         </tbody>
       </table>
+      </div>
 
       <h3>آخرین کارها</h3>
+      <div style={{ overflowX: "auto" }}>
       <table className="table">
         <thead>
           <tr>
@@ -217,6 +220,7 @@ export default function AdminPage() {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

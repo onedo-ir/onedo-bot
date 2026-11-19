@@ -2,6 +2,11 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { api, clearToken, getToken, setToken } from "./api";
 
 const AuthContext = createContext(null);
+const DEFAULT_THEME = "dark";
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme || DEFAULT_THEME);
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -10,22 +15,25 @@ export function AuthProvider({ children }) {
   async function refresh() {
     if (!getToken()) {
       setUser(null);
+      applyTheme(DEFAULT_THEME);
       setLoading(false);
       return;
     }
     try {
       const me = await api.me();
       setUser(me);
-      document.documentElement.setAttribute("data-theme", me.theme_preference || "light");
+      applyTheme(me.theme_preference || DEFAULT_THEME);
     } catch {
       clearToken();
       setUser(null);
+      applyTheme(DEFAULT_THEME);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
+    applyTheme(DEFAULT_THEME);
     refresh();
   }, []);
 
@@ -43,12 +51,13 @@ export function AuthProvider({ children }) {
   function logout() {
     clearToken();
     setUser(null);
+    applyTheme(DEFAULT_THEME);
   }
 
   async function setTheme(theme) {
     const updated = await api.updateMe({ theme_preference: theme });
     setUser(updated);
-    document.documentElement.setAttribute("data-theme", theme);
+    applyTheme(theme);
   }
 
   return (

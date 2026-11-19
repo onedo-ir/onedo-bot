@@ -30,7 +30,7 @@ def seed_database(db: Session) -> None:
             full_name="مدیر Onedo",
             hashed_password=hash_password(settings.default_admin_password),
             role=UserRole.admin,
-            theme_preference="light",
+            theme_preference="dark",
         )
         db.add(admin)
         db.flush()
@@ -46,7 +46,7 @@ def seed_database(db: Session) -> None:
             full_name="کاربر نمونه",
             hashed_password=hash_password("Demo123!"),
             role=UserRole.user,
-            theme_preference="light",
+            theme_preference="dark",
         )
         db.add(demo)
         db.flush()

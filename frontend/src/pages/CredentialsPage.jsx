@@ -70,34 +70,36 @@ export default function CredentialsPage() {
         </button>
       </form>
 
-      <table className="table">
-        <thead>
-          <tr>
-            <th>برچسب</th>
-            <th>سایت</th>
-            <th>کاربر</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => (
-            <tr key={item.id}>
-              <td>{item.label}</td>
-              <td>{item.site_url || "—"}</td>
-              <td>{item.username || "—"}</td>
-              <td>
-                <button
-                  className="btn ghost"
-                  type="button"
-                  onClick={() => api.deleteCredential(item.id).then(load)}
-                >
-                  حذف
-                </button>
-              </td>
+      <div style={{ overflowX: "auto" }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>برچسب</th>
+              <th>سایت</th>
+              <th>کاربر</th>
+              <th></th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.id}>
+                <td>{item.label}</td>
+                <td>{item.site_url || "—"}</td>
+                <td>{item.username || "—"}</td>
+                <td>
+                  <button
+                    className="btn ghost"
+                    type="button"
+                    onClick={() => api.deleteCredential(item.id).then(load)}
+                  >
+                    حذف
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

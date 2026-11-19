@@ -9,6 +9,7 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [frame, setFrame] = useState({ image: null, url: "about:blank", title: "" });
   const [error, setError] = useState("");
+  const [showConvs, setShowConvs] = useState(false);
   const bottomRef = useRef(null);
 
   async function loadConversations(selectId) {
@@ -92,6 +93,14 @@ export default function ChatPage() {
   async function newChat() {
     const conv = await api.createConversation();
     await loadConversations(conv.id);
+    setShowConvs(false);
+  }
+
+  async function selectConversation(id) {
+    setActiveId(id);
+    setShowConvs(false);
+    const detail = await api.getConversation(id);
+    setMessages(detail.messages || []);
   }
 
   return (
@@ -104,30 +113,36 @@ export default function ChatPage() {
               دستور را بنویس؛ اگر گیر کرد می‌پرسد.
             </div>
           </div>
-          <button className="btn soft" type="button" onClick={newChat}>
-            گفتگوی تازه
-          </button>
+          <div className="panel-header-actions">
+            <button className="btn ghost conv-toggle" type="button" onClick={() => setShowConvs((v) => !v)}>
+              {showConvs ? "بستن لیست" : "گفتگوها"}
+            </button>
+            <button className="btn soft" type="button" onClick={newChat}>
+              گفتگوی تازه
+            </button>
+          </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", minHeight: 0, flex: 1 }}>
-          <div className="conv-list" style={{ borderLeft: "1px solid var(--border)", padding: 8 }}>
+        <div className={`chat-body ${showConvs ? "convs-open" : ""}`}>
+          <div className="conv-list">
+            {conversations.length === 0 && (
+              <div className="empty" style={{ padding: 12, fontSize: "0.85rem" }}>
+                هنوز گفتگویی نیست
+              </div>
+            )}
             {conversations.map((c) => (
               <button
                 key={c.id}
                 type="button"
                 className={`conv-item ${activeId === c.id ? "active" : ""}`}
-                onClick={async () => {
-                  setActiveId(c.id);
-                  const detail = await api.getConversation(c.id);
-                  setMessages(detail.messages || []);
-                }}
+                onClick={() => selectConversation(c.id)}
               >
                 {c.title}
               </button>
             ))}
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div className="chat-main">
             <div className="messages">
               {messages.length === 0 && (
                 <div className="empty">
@@ -154,7 +169,7 @@ export default function ChatPage() {
                   }
                 }}
               />
-              <button className="btn" type="button" disabled={busy} onClick={send}>
+              <button className="btn composer-send" type="button" disabled={busy} onClick={send}>
                 ارسال
               </button>
             </div>
