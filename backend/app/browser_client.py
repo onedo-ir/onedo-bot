@@ -54,3 +54,28 @@ class BrowserClient:
 
     async def reset(self) -> dict[str, Any]:
         return await self._request("POST", "/reset")
+
+    async def input_click(self, x: float, y: float, button: str = "left") -> dict[str, Any]:
+        return await self._request(
+            "POST", "/input/click", json={"x": x, "y": y, "button": button}
+        )
+
+    async def input_dblclick(self, x: float, y: float) -> dict[str, Any]:
+        return await self._request("POST", "/input/dblclick", json={"x": x, "y": y})
+
+    async def input_type(self, text: str) -> dict[str, Any]:
+        return await self._request("POST", "/input/type", json={"text": text})
+
+    async def input_scroll(
+        self,
+        delta_x: float = 0,
+        delta_y: float = 0,
+        x: float | None = None,
+        y: float | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"delta_x": delta_x, "delta_y": delta_y}
+        if x is not None:
+            payload["x"] = x
+        if y is not None:
+            payload["y"] = y
+        return await self._request("POST", "/input/scroll", json=payload)

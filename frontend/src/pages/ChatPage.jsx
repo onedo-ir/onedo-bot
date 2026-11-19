@@ -1,5 +1,56 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+
+const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
+
+function mapPointerToViewport(event, img, viewport) {
+  if (!img || !viewport?.width || !viewport?.height) return null;
+  const rect = img.getBoundingClientRect();
+  const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height);
+  if (!scale) return null;
+  const dispW = viewport.width * scale;
+  const dispH = viewport.height * scale;
+  const offsetX = (rect.width - dispW) / 2;
+  const offsetY = (rect.height - dispH) / 2;
+  const x = (event.clientX - rect.left - offsetX) / scale;
+  const y = (event.clientY - rect.top - offsetY) / scale;
+  if (x < 0 || y < 0 || x >= viewport.width || y >= viewport.height) return null;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+function playwrightKey(event) {
+  const special = {
+    Enter: "Enter",
+    Backspace: "Backspace",
+    Delete: "Delete",
+    Tab: "Tab",
+    Escape: "Escape",
+    ArrowLeft: "ArrowLeft",
+    ArrowRight: "ArrowRight",
+    ArrowUp: "ArrowUp",
+    ArrowDown: "ArrowDown",
+    Home: "Home",
+    End: "End",
+    PageUp: "PageUp",
+    PageDown: "PageDown",
+  };
+  const base = special[event.key] || (event.key.length === 1 ? event.key : null);
+  if (!base) return null;
+  if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    return { type: "type", value: event.key };
+  }
+  const parts = [];
+  if (event.ctrlKey) parts.push("Control");
+  if (event.metaKey) parts.push("Meta");
+  if (event.altKey) parts.push("Alt");
+  if (event.shiftKey && event.key.length !== 1) parts.push("Shift");
+  if (event.key.length === 1) {
+    parts.push(event.key);
+  } else {
+    parts.push(base);
+  }
+  return { type: "press", value: parts.join("+") };
+}
 
 export default function ChatPage() {
   const [conversations, setConversations] = useState([]);
@@ -7,9 +58,22 @@ export default function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [frame, setFrame] = useState({ image: null, url: "about:blank", title: "" });
+  const [frame, setFrame] = useState({
+    image: null,
+    url: "about:blank",
+    title: "",
+    width: DEFAULT_VIEWPORT.width,
+    height: DEFAULT_VIEWPORT.height,
+  });
+  const [urlDraft, setUrlDraft] = useState("about:blank");
+  const [browserFocused, setBrowserFocused] = useState(false);
   const [error, setError] = useState("");
   const [showConvs, setShowConvs] = useState(false);
+  const frameImgRef = useRef(null);
+  const browserSurfaceRef = useRef(null);
+  const urlInputRef = useRef(null);
+  const scrollBusy = useRef(false);
+  const urlSynced = useRef("");
 
   async function loadConversations(selectId) {
     const list = await api.conversations();
@@ -36,7 +100,22 @@ export default function ChatPage() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === "frame") {
-          setFrame({ image: data.image, url: data.url || "", title: data.title || "" });
+          const nextUrl = data.url || "";
+          setFrame({
+            image: data.image,
+            url: nextUrl,
+            title: data.title || "",
+            width: data.width || DEFAULT_VIEWPORT.width,
+            height: data.height || DEFAULT_VIEWPORT.height,
+          });
+          if (
+            nextUrl &&
+            nextUrl !== urlSynced.current &&
+            document.activeElement !== urlInputRef.current
+          ) {
+            urlSynced.current = nextUrl;
+            setUrlDraft(nextUrl);
+          }
         }
       } catch {
         /* ignore */
@@ -108,6 +187,103 @@ export default function ChatPage() {
       const nextId = activeId === id ? null : activeId;
       await loadConversations(nextId);
       setShowConvs(false);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function goUrl(event) {
+    event?.preventDefault?.();
+    const raw = (urlDraft || "").trim();
+    if (!raw) return;
+    setError("");
+    try {
+      const result = await api.browserNavigate(raw);
+      const next = result?.url || raw;
+      urlSynced.current = next;
+      setUrlDraft(next);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function resetBrowser() {
+    setError("");
+    try {
+      await api.browserReset();
+      urlSynced.current = "about:blank";
+      setUrlDraft("about:blank");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleBrowserClick(event) {
+    if (event.detail > 1) return;
+    const point = mapPointerToViewport(event, frameImgRef.current, frame);
+    if (!point) return;
+    browserSurfaceRef.current?.focus();
+    try {
+      await api.browserClick(point.x, point.y, "left");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleBrowserContextMenu(event) {
+    event.preventDefault();
+    const point = mapPointerToViewport(event, frameImgRef.current, frame);
+    if (!point) return;
+    browserSurfaceRef.current?.focus();
+    try {
+      await api.browserClick(point.x, point.y, "right");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleBrowserDblClick(event) {
+    const point = mapPointerToViewport(event, frameImgRef.current, frame);
+    if (!point) return;
+    try {
+      await api.browserDblClick(point.x, point.y);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleBrowserWheel(event) {
+    event.preventDefault();
+    if (scrollBusy.current) return;
+    const point = mapPointerToViewport(event, frameImgRef.current, frame);
+    scrollBusy.current = true;
+    try {
+      await api.browserScroll({
+        x: point?.x,
+        y: point?.y,
+        delta_x: event.deltaX,
+        delta_y: event.deltaY,
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTimeout(() => {
+        scrollBusy.current = false;
+      }, 60);
+    }
+  }
+
+  async function handleBrowserKeyDown(event) {
+    if (event.target.closest?.("input, textarea, button")) return;
+    const mapped = playwrightKey(event);
+    if (!mapped) return;
+    event.preventDefault();
+    try {
+      if (mapped.type === "type") {
+        await api.browserType(mapped.value);
+      } else {
+        await api.browserPress(mapped.value);
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -210,15 +386,51 @@ export default function ChatPage() {
         <div className="panel-header">
           <div>
             <strong>مرورگر</strong>
+            <div className="muted" style={{ fontSize: "0.78rem" }}>
+              {browserFocused ? "فعال — کلیک، تایپ و اسکرول کنید" : "برای کار، روی تصویر کلیک کنید"}
+            </div>
           </div>
-          <button className="btn ghost" type="button" onClick={() => api.browserReset()}>
+          <button className="btn ghost" type="button" onClick={resetBrowser}>
             ریست
           </button>
         </div>
-        <div className="browser-frame">
-          {frame.url && <div className="browser-url">{frame.title || frame.url}</div>}
+        <form className="browser-toolbar" onSubmit={goUrl}>
+          <input
+            ref={urlInputRef}
+            className="browser-url-input"
+            value={urlDraft}
+            onChange={(e) => setUrlDraft(e.target.value)}
+            placeholder="https://…"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            dir="ltr"
+          />
+          <button className="btn soft" type="submit">
+            برو
+          </button>
+        </form>
+        <div
+          className={`browser-frame interactive ${browserFocused ? "focused" : ""}`}
+          ref={browserSurfaceRef}
+          tabIndex={0}
+          role="application"
+          aria-label="مرورگر تعاملی"
+          onFocus={() => setBrowserFocused(true)}
+          onBlur={() => setBrowserFocused(false)}
+          onKeyDown={handleBrowserKeyDown}
+          onContextMenu={handleBrowserContextMenu}
+        >
           {frame.image ? (
-            <img src={frame.image} alt="live browser" />
+            <img
+              ref={frameImgRef}
+              src={frame.image}
+              alt="live browser"
+              draggable={false}
+              onClick={handleBrowserClick}
+              onDoubleClick={handleBrowserDblClick}
+              onWheel={handleBrowserWheel}
+            />
           ) : (
             <div className="empty" style={{ color: "#aeaeb2" }}>
               در انتظار تصویر زنده…

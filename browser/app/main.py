@@ -39,6 +39,30 @@ class WaitIn(BaseModel):
     ms: int = 1000
 
 
+class PointIn(BaseModel):
+    x: float
+    y: float
+    button: str = "left"
+
+
+class InputTypeIn(BaseModel):
+    text: str
+
+
+class ScrollIn(BaseModel):
+    x: float | None = None
+    y: float | None = None
+    delta_x: float = 0
+    delta_y: float = 0
+
+
+def clamp_point(x: float, y: float) -> tuple[int, int]:
+    return (
+        max(0, min(WIDTH - 1, int(round(x)))),
+        max(0, min(HEIGHT - 1, int(round(y)))),
+    )
+
+
 async def ensure_page() -> Page:
     page: Page | None = state.get("page")
     browser: Browser | None = state.get("browser")
@@ -87,7 +111,7 @@ async def current():
 async def navigate(payload: NavigateIn):
     page = await ensure_page()
     url = payload.url.strip()
-    if not url.startswith("http"):
+    if url and not url.startswith(("http://", "https://", "about:", "data:")):
         url = "https://" + url
     await page.goto(url, wait_until="domcontentloaded", timeout=45000)
     return {"url": page.url, "title": await page.title()}
@@ -148,7 +172,60 @@ async def screenshot():
     page = await ensure_page()
     raw = await page.screenshot(type="jpeg", quality=55, full_page=False)
     encoded = base64.b64encode(raw).decode("ascii")
-    return {"image": f"data:image/jpeg;base64,{encoded}", "url": page.url}
+    return {
+        "image": f"data:image/jpeg;base64,{encoded}",
+        "url": page.url,
+        "width": WIDTH,
+        "height": HEIGHT,
+    }
+
+
+@app.post("/input/click")
+async def input_click(payload: PointIn):
+    page = await ensure_page()
+    x, y = clamp_point(payload.x, payload.y)
+    button = payload.button if payload.button in {"left", "right", "middle"} else "left"
+    await page.mouse.click(x, y, button=button)
+    await page.wait_for_timeout(200)
+    return {"url": page.url, "title": await page.title(), "x": x, "y": y, "button": button}
+
+
+@app.post("/input/dblclick")
+async def input_dblclick(payload: PointIn):
+    page = await ensure_page()
+    x, y = clamp_point(payload.x, payload.y)
+    await page.mouse.dblclick(x, y)
+    await page.wait_for_timeout(200)
+    return {"url": page.url, "title": await page.title(), "x": x, "y": y}
+
+
+@app.post("/input/type")
+async def input_type(payload: InputTypeIn):
+    page = await ensure_page()
+    text = payload.text or ""
+    if text:
+        await page.keyboard.type(text, delay=12)
+    await page.wait_for_timeout(100)
+    return {"url": page.url, "title": await page.title(), "chars": len(text)}
+
+
+@app.post("/input/scroll")
+async def input_scroll(payload: ScrollIn):
+    page = await ensure_page()
+    if payload.x is not None and payload.y is not None:
+        x, y = clamp_point(payload.x, payload.y)
+        await page.mouse.move(x, y)
+    dx = int(payload.delta_x or 0)
+    dy = int(payload.delta_y or 0)
+    if dx or dy:
+        await page.mouse.wheel(dx, dy)
+    await page.wait_for_timeout(80)
+    return {
+        "url": page.url,
+        "title": await page.title(),
+        "delta_x": dx,
+        "delta_y": dy,
+    }
 
 
 @app.post("/reset")

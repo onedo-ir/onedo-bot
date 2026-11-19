@@ -51,4 +51,31 @@ export const api = {
     }),
   browserStatus: () => request("/api/browser/status"),
   browserReset: () => request("/api/browser/reset", { method: "POST" }),
+  browserNavigate: (url) =>
+    request("/api/browser/navigate", { method: "POST", body: JSON.stringify({ url }) }),
+  browserClick: (x, y, button = "left") =>
+    request("/api/browser/input/click", {
+      method: "POST",
+      body: JSON.stringify({ x, y, button }),
+    }),
+  browserDblClick: (x, y) =>
+    request("/api/browser/input/dblclick", {
+      method: "POST",
+      body: JSON.stringify({ x, y }),
+    }),
+  browserType: (text) =>
+    request("/api/browser/input/type", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+  browserPress: (key) =>
+    request("/api/browser/input/press", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+  browserScroll: (payload) =>
+    request("/api/browser/input/scroll", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
