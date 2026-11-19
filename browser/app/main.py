@@ -80,8 +80,9 @@ def http_playwright_error(exc: Exception) -> HTTPException:
 async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     """Visible actionable tags on the current page only (links, buttons, fields)."""
     try:
+        # Raw string: a normal """...""" would corrupt /\\/g into broken JS regex.
         items = await page.evaluate(
-            """() => {
+            r"""() => {
   const out = [];
   const seen = new Set();
   const MAX = 120;
@@ -95,7 +96,8 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     return r.width > 1 && r.height > 1;
   };
   const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 120);
-  const esc = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  // JSON.stringify escapes quotes/backslashes safely for selector literals.
+  const esc = (s) => JSON.stringify(String(s || '')).slice(1, -1);
   const textOf = (el) => clean(
     el.innerText || el.value || el.getAttribute('aria-label') ||
     el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('alt') || ''
