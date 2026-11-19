@@ -80,12 +80,15 @@ def http_playwright_error(exc: Exception) -> HTTPException:
 async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     """Visible actionable tags on the current page only (links, buttons, fields)."""
     try:
-        # Raw string: a normal """...""" would corrupt /\\/g into broken JS regex.
+        # Raw string: a normal """...""" would corrupt JS backslash regexes.
+        # Per-kind quotas: links must not starve buttons/fields (sites often have 200+ anchors).
         items = await page.evaluate(
             r"""() => {
   const out = [];
   const seen = new Set();
-  const MAX = 120;
+  const MAX = 140;
+  const quota = { field: 25, button: 40, link: 60, control: 15 };
+  const used = { field: 0, button: 0, link: 0, control: 0 };
   const isVisible = (el) => {
     if (!el || !(el instanceof Element)) return false;
     const style = window.getComputedStyle(el);
@@ -98,12 +101,15 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
   const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   // JSON.stringify escapes quotes/backslashes safely for selector literals.
   const esc = (s) => JSON.stringify(String(s || '')).slice(1, -1);
-  const textOf = (el) => clean(
-    el.innerText || el.value || el.getAttribute('aria-label') ||
-    el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('alt') || ''
-  );
+  const textOf = (el) => {
+    const visual = clean(el.innerText || el.value || '');
+    const aria = clean(el.getAttribute('aria-label') || '');
+    return visual || aria || clean(
+      el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('alt') || ''
+    );
+  };
   const push = (el, kind) => {
-    if (out.length >= MAX || !isVisible(el)) return;
+    if (out.length >= MAX || used[kind] >= quota[kind] || !isVisible(el)) return;
     const tag = el.tagName.toLowerCase();
     const text = textOf(el);
     const href = el.getAttribute('href') || '';
@@ -111,7 +117,8 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     const role = el.getAttribute('role') || '';
     const name = el.getAttribute('name') || '';
     const id = el.id || '';
-    const key = [tag, kind, href, text, type, name, id].join('|');
+    const aria = el.getAttribute('aria-label') || '';
+    const key = [tag, kind, href, text, type, name, id, aria].join('|');
     if (seen.has(key)) return;
     seen.add(key);
     let selector = '';
@@ -121,6 +128,8 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
       selector = tag + '[name="' + esc(name) + '"]';
     } else if (href && tag === 'a') {
       selector = 'a[href="' + esc(href) + '"]';
+    } else if (aria) {
+      selector = tag + '[aria-label="' + esc(aria) + '"]';
     } else if (text) {
       selector = tag + ':has-text("' + esc(text.slice(0, 48)) + '")';
     } else if (type) {
@@ -128,18 +137,19 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     } else {
       selector = tag;
     }
+    used[kind] += 1;
     out.push({ tag, kind, text, href, type, role, name, selector });
   };
-  document.querySelectorAll('a[href]').forEach((el) => push(el, 'link'));
-  document.querySelectorAll(
-    'button, [role="button"], input[type="submit"], input[type="button"], input[type="reset"], input[type="image"]'
-  ).forEach((el) => push(el, 'button'));
-  document.querySelectorAll('[role="link"]').forEach((el) => push(el, 'link'));
+  // Fields and buttons first so dense link lists cannot hide them.
   document.querySelectorAll(
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]), textarea, select'
   ).forEach((el) => push(el, 'field'));
+  document.querySelectorAll(
+    'button, [role="button"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], input[type="reset"], input[type="image"]'
+  ).forEach((el) => push(el, 'button'));
+  document.querySelectorAll('a[href], [role="link"]').forEach((el) => push(el, 'link'));
   document.querySelectorAll('summary, [onclick]').forEach((el) => {
-    if (el.matches('a, button, input, textarea, select, [role="button"], [role="link"]')) return;
+    if (el.matches('a, button, input, textarea, select, [role="button"], [role="link"], [role="tab"], [role="menuitem"]')) return;
     push(el, 'control');
   });
   return out;
@@ -150,7 +160,7 @@ async def collect_page_actions(page: Page) -> list[dict[str, str]]:
     if not isinstance(items, list):
         return []
     cleaned: list[dict[str, str]] = []
-    for raw in items[:120]:
+    for raw in items[:140]:
         if not isinstance(raw, dict):
             continue
         cleaned.append(
