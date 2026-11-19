@@ -374,8 +374,27 @@ export default function ChatPage() {
                   }
                 }}
               />
-              <button className="btn composer-send" type="button" disabled={busy} onClick={send}>
-                {busy ? "…" : "ارسال"}
+              <button
+                className="btn composer-send"
+                type="button"
+                disabled={busy}
+                onClick={send}
+                aria-label="ارسال"
+                title="ارسال"
+              >
+                {busy ? (
+                  <svg className="composer-send-icon is-busy" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+                    <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <svg className="composer-send-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      fill="currentColor"
+                      d="M3.4 20.6 21 12 3.4 3.4l.1 6.8L14 12l-10.5 1.8z"
+                    />
+                  </svg>
+                )}
               </button>
             </div>
           </div>

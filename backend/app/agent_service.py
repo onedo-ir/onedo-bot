@@ -1,6 +1,7 @@
 import json
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy.orm import Session
@@ -10,6 +11,22 @@ from app.config import get_settings
 from app.models import AgentTask, CredentialVault, Message, MessageRole, TaskStatus
 
 MAX_STEPS = 15
+
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+98|0)?9\d{9}(?!\d)|(?<!\d)0\d{10,11}(?!\d)")
+_URL_RE = re.compile(r"https?://[^\s<>\"']+|www\.[^\s<>\"']+", re.I)
+
+# Only for homepage grounding when the user named the site (never deep paths).
+_SITE_ALIASES: dict[str, tuple[str, ...]] = {
+    "digikala": ("digikala", "دیجی کالا", "دیجیکالا", "دیجی‌کالا"),
+    "snapp": ("snapp", "اسنپ"),
+    "tapsi": ("tapsi", "تپسی"),
+    "divar": ("divar", "دیوار"),
+    "torob": ("torob", "ترب"),
+    "google": ("google", "گوگل"),
+    "github": ("github", "گیت‌هاب", "گیتهاب"),
+    "linkedin": ("linkedin", "لینکدین", "لینک‌دین"),
+}
 
 
 def resolve_ai_config() -> tuple[str, str, str]:
@@ -84,6 +101,170 @@ def parse_llm_json(content: str) -> dict[str, Any]:
     raise ValueError("پاسخ مدل JSON معتبر نبود")
 
 
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
+def _evidence_corpus(
+    instruction: str,
+    page_url: str,
+    page_text: str,
+    vault_text: str,
+    history: list[dict[str, Any]],
+    last_extract: str = "",
+) -> str:
+    parts = [instruction, page_url, page_text, vault_text, last_extract]
+    for item in history[-12:]:
+        parts.append(str(item.get("detail") or ""))
+        parts.append(str(item.get("reason") or ""))
+        parts.append(str(item.get("action") or ""))
+    return _norm("\n".join(parts))
+
+
+def _host_stem(host: str) -> str:
+    host = (host or "").lower().removeprefix("www.")
+    if not host:
+        return ""
+    return host.split(".")[0]
+
+
+def _normalize_navigate_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://", "about:", "data:")):
+        return raw
+    return "https://" + raw
+
+
+def is_url_grounded(url: str, corpus: str) -> bool:
+    """Allow navigate only when URL/domain is evidenced; block invented deep paths."""
+    full = _normalize_navigate_url(url)
+    if not full or full.startswith("about:"):
+        return True
+    parsed = urlparse(full)
+    host = (parsed.netloc or "").lower().removeprefix("www.")
+    path = parsed.path or "/"
+    full_l = full.lower()
+    host_l = host.lower()
+    path_l = path.lower()
+
+    if full_l in corpus or full_l.replace("https://", "").replace("http://", "") in corpus:
+        return True
+    if host_l and host_l in corpus:
+        # Homepage / shallow path OK when domain is known from evidence
+        if path_l in {"", "/", "/fa", "/en", "/home", "/index.html"}:
+            return True
+        if path_l in corpus or path_l.rstrip("/") in corpus:
+            return True
+        # Deep path not seen anywhere → treat as guess
+        return False
+
+    stem = _host_stem(host)
+    shallow = path_l in {"", "/", "/fa", "/en", "/home", "/index.html"}
+    # Brand mentioned as latin stem in evidence (e.g. digikala)
+    if stem and len(stem) >= 4 and stem in corpus.replace(" ", ""):
+        return shallow
+    # Persian/English aliases only unlock the homepage, never invented deep links
+    aliases = _SITE_ALIASES.get(stem, ())
+    if shallow and aliases and any(_norm(alias) in corpus for alias in aliases):
+        return True
+    return False
+
+
+def looks_like_invented_secret(text: str, corpus: str) -> bool:
+    value = (text or "").strip()
+    if not value or len(value) < 5:
+        return False
+    if value.lower() in corpus:
+        return False
+    if _EMAIL_RE.fullmatch(value):
+        return True
+    if _PHONE_RE.fullmatch(re.sub(r"[\s-]", "", value)):
+        return True
+    # Long digit codes / OTPs not present in evidence
+    if re.fullmatch(r"\d{4,8}", value) and value not in corpus:
+        return True
+    return False
+
+
+def apply_decision_guardrails(
+    decision: dict[str, Any],
+    *,
+    instruction: str,
+    page_url: str,
+    page_text: str,
+    vault_text: str,
+    history: list[dict[str, Any]],
+    last_extract: str = "",
+) -> dict[str, Any]:
+    """Hard guardrails: do not invent URLs/values; prefer page evidence; ask when unsure."""
+    out = dict(decision or {})
+    action = (out.get("action") or "").lower().strip()
+    corpus = _evidence_corpus(
+        instruction, page_url, page_text, vault_text, history, last_extract
+    )
+    blank = (page_url or "").startswith("about:blank") or not (page_url or "").strip()
+
+    if action == "navigate":
+        url = _normalize_navigate_url(str(out.get("url") or ""))
+        out["url"] = url
+        if not is_url_grounded(url, corpus):
+            return {
+                "action": "ask",
+                "question": (
+                    "آدرس مطمئنی برای رفتن پیدا نکردم و نمی‌خواهم حدس بزنم. "
+                    "لطفاً URL دقیق را بفرستید، یا بگویید از کدام لینک/صفحهٔ فعلی استفاده کنم."
+                ),
+                "reason": "guardrail_unguessed_url",
+                "blocked_url": url,
+            }
+
+    if action == "type":
+        text = str(out.get("text") or "")
+        if looks_like_invented_secret(text, corpus):
+            return {
+                "action": "ask",
+                "question": (
+                    "مقدار حساس/شناسه‌ای که برای تایپ لازم است در پیام شما، خزانه، "
+                    "یا متن صفحه نیست و نباید حدس زده شود. لطفاً همان مقدار را بفرستید."
+                ),
+                "reason": "guardrail_unguessed_value",
+            }
+
+    if action == "done":
+        summary = str(out.get("summary") or "")
+        # If summarizing page facts but never extracted and page has content, force extract once
+        extracted_before = any(
+            (h.get("action") or "") in {"extract", "done"} for h in history
+        )
+        if (
+            not blank
+            and page_text.strip()
+            and not extracted_before
+            and not (last_extract or "").strip()
+            and len(summary) > 40
+        ):
+            return {
+                "action": "extract",
+                "selector": "body",
+                "reason": "guardrail_extract_before_done",
+            }
+
+        for found in _URL_RE.findall(summary):
+            if not is_url_grounded(found, corpus):
+                return {
+                    "action": "ask",
+                    "question": (
+                        "در خلاصه آدرسی آمده که از صفحه/دستور شما استخراج نشده. "
+                        "کدام منبع را مبنا قرار بدهم، یا خودتان تأیید کنید؟"
+                    ),
+                    "reason": "guardrail_summary_url",
+                }
+
+    return out
+
+
 async def call_llm_next_action(
     instruction: str,
     page_url: str,
@@ -112,22 +293,29 @@ async def call_llm_next_action(
         "  key (press, e.g. Enter), ms (wait), question (ask),\n"
         "  label/site_url/username/secret_note (save_credential),\n"
         "  summary (Persian, for done), reason (short).\n"
-        "Rules:\n"
-        "- Use the browser only when needed for the user goal.\n"
-        "- Prefer going directly to the relevant site/page. Do NOT use Google "
-        "search unless the user explicitly asked to search Google or no better "
-        "URL is known.\n"
-        "- After typing in a search box or form, press Enter or click submit.\n"
-        "- For click/type selectors: prefer ONE specific visible field "
-        "(e.g. input[name='q'] or textarea). Avoid broad comma-separated selectors "
-        "that may match hidden inputs first.\n"
-        "- If a previous action failed, pick a different selector or click the field "
-        "first, then type.\n"
-        "- Credential vault is private (not shown in UI). You MAY read the vault "
-        "list provided below and use save_credential to store new login notes.\n"
-        "- If unsure, login is required, or an irreversible action is needed, use ask.\n"
-        "- When the goal is finished (or pure Q&A with no browsing needed), use done "
-        "with a clear Persian summary.\n"
+        "\n"
+        "HARD GUARDRAILS (never violate):\n"
+        "1) NEVER invent or guess: URLs, deep paths, phone numbers, emails, OTPs, "
+        "prices, order ids, selectors, credentials, or form values.\n"
+        "2) Evidence only: use facts from (a) the user instruction, (b) credential "
+        "vault, (c) current page URL/title/text, (d) prior extract/action results.\n"
+        "3) If a needed URL/value is missing from evidence → action=ask. Do not "
+        "fabricate digikala/deep links, tracking URLs, or login fields.\n"
+        "4) On a loaded page: first understand the page. Prefer extract and then "
+        "click visible links/buttons described in page text. Prefer in-page click "
+        "over navigate to a guessed path on the same site.\n"
+        "5) navigate is allowed only for a URL the user gave, a link/domain clearly "
+        "present in page/vault, or the site homepage when the user named that site. "
+        "Never invent /product/... or query URLs.\n"
+        "6) Do NOT open Google/Bing unless the user explicitly asked to search there.\n"
+        "7) After typing in a real visible field, press Enter or click the submit "
+        "control that is evidenced on the page.\n"
+        "8) Selectors: ONE specific visible control. No broad comma-separated lists.\n"
+        "9) If a previous action failed: change approach from page evidence, or ask.\n"
+        "10) done summary must only state evidenced facts (from page/extract/user). "
+        "If unsure, ask or extract again.\n"
+        "11) Credential vault is private; you may read it and use save_credential.\n"
+        "12) Pure Q&A with no browsing needed → done with a Persian answer.\n"
         "Respond with JSON only."
     )
     history_lines = []
@@ -143,6 +331,7 @@ async def call_llm_next_action(
         f"Recent actions:\n"
         + ("\n".join(history_lines) if history_lines else "(none)")
         + "\n\n"
+        "Reminder: do not guess URLs or values; use the page text below as evidence.\n\n"
         f"Visible page text (truncated):\n{page_text[:4500]}\n"
     )
 
@@ -216,13 +405,23 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 page_text = ""
 
             vault_items = list_vault(db)
+            vault_text = format_vault_for_prompt(vault_items)
             decision = await call_llm_next_action(
                 task.instruction,
                 page_url,
                 page_title,
                 page_text,
                 history,
-                format_vault_for_prompt(vault_items),
+                vault_text,
+            )
+            decision = apply_decision_guardrails(
+                decision,
+                instruction=task.instruction,
+                page_url=page_url,
+                page_text=page_text,
+                vault_text=vault_text,
+                history=history,
+                last_extract=last_extract,
             )
             action = (decision.get("action") or "").lower().strip()
             reason = decision.get("reason") or ""

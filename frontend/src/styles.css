@@ -535,9 +535,31 @@ select:focus {
 
 .composer-send {
   align-self: stretch;
-  min-width: 84px;
+  width: 48px;
+  min-width: 48px;
+  padding: 0;
   border-radius: var(--radius-pill);
-  padding-inline: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.composer-send-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+  transform: scaleX(-1);
+}
+
+.composer-send-icon.is-busy {
+  transform: none;
+  animation: composer-send-spin 0.8s linear infinite;
+}
+
+@keyframes composer-send-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .browser-toolbar {
@@ -790,7 +812,8 @@ select:focus {
   }
 
   .composer-send {
-    min-width: 72px;
+    width: 44px;
+    min-width: 44px;
   }
 
   .bubble {
