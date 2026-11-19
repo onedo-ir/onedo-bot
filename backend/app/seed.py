@@ -6,37 +6,49 @@ from app.models import AppSetting
 
 
 def migrate_schema_to_single_user(engine: Engine) -> None:
-    """حذف جدول کاربر و ستون‌های user_id از دیتابیس‌های قبلی."""
-    insp = inspect(engine)
-    tables = set(insp.get_table_names())
+    """حذف جدول کاربر و ستون‌های user_id از دیتابیس‌های قبلی.
 
-    with engine.begin() as conn:
+    introspection را قبل از هر ALTER انجام می‌دهد تا قفل جدول روی یک اتصال
+    و inspect روی اتصال دیگر باعث deadlock نشود.
+    """
+    statements: list[str] = []
+
+    with engine.connect() as conn:
+        insp = inspect(conn)
+        tables = set(insp.get_table_names())
+
         for table in ("conversations", "agent_tasks", "credential_vault"):
             if table not in tables:
                 continue
-            fks = insp.get_foreign_keys(table)
-            for fk in fks:
+            for fk in insp.get_foreign_keys(table):
                 referred = fk.get("referred_table")
                 cols = fk.get("constrained_columns") or []
                 if referred == "users" or "user_id" in cols:
                     name = fk.get("name")
                     if name:
-                        conn.execute(text(f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{name}"'))
+                        statements.append(
+                            f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{name}"'
+                        )
 
-            cols = {c["name"] for c in insp.get_columns(table)}
-            if "user_id" in cols:
-                conn.execute(text(f'ALTER TABLE "{table}" DROP COLUMN IF EXISTS user_id'))
+            col_names = {c["name"] for c in insp.get_columns(table)}
+            if "user_id" in col_names:
+                statements.append(f'ALTER TABLE "{table}" DROP COLUMN IF EXISTS user_id')
 
         if "users" in tables:
-            conn.execute(text("DROP TABLE IF EXISTS users CASCADE"))
+            statements.append("DROP TABLE IF EXISTS users CASCADE")
 
         if "app_settings" in tables:
-            conn.execute(
-                text(
-                    "DELETE FROM app_settings WHERE key IN "
-                    "('ai_base_url', 'ai_model', 'ai_api_key')"
-                )
+            statements.append(
+                "DELETE FROM app_settings WHERE key IN "
+                "('ai_base_url', 'ai_model', 'ai_api_key')"
             )
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
 
 
 def seed_database(db: Session) -> None:

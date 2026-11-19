@@ -10,8 +10,12 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 
 WORKDIR /app
 
+# Keep apt .debs so BuildKit cache mounts actually speed up rebuilds
+RUN rm -f /etc/apt/apt.conf.d/docker-clean \
+    && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/sources.list.d/* \
     && printf 'deb http://mirror.arvancloud.ir/debian bookworm main\ndeb http://mirror.arvancloud.ir/debian-security bookworm-security main\n' > /etc/apt/sources.list \
     && apt-get update \
@@ -36,13 +40,19 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libxfixes3 \
         libxkbcommon0 \
         libxrandr2 \
-        xdg-utils \
-    && rm -rf /var/lib/apt/lists/*
+        xdg-utils
 
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt \
-    && playwright install chromium
+    pip install -r requirements.txt
+
+# Chromium is large; reuse BuildKit cache across rebuilds, then copy into the image layer
+RUN --mount=type=cache,id=onedo-playwright-chromium,target=/cache/pw,sharing=locked \
+    mkdir -p /ms-playwright \
+    && if [ -n "$(ls -A /cache/pw 2>/dev/null)" ]; then cp -a /cache/pw/. /ms-playwright/; fi \
+    && playwright install chromium \
+    && find /cache/pw -mindepth 1 -delete \
+    && cp -a /ms-playwright/. /cache/pw/
 
 COPY app ./app
 

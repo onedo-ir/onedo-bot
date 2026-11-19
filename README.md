@@ -13,6 +13,8 @@ export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
 docker compose up -d --build
 ```
 
+بیلد با BuildKit کش می‌شود (apt/pip/npm و Chromium مرورگر). برای سرعت، `--no-cache` نزنید و کش بیلدر را پاک نکنید مگر لازم باشد.
+
 سپس باز کنید: `http://localhost:12277` یا دامنه پروژه.
 
 ### ورود تک‌کاربره
