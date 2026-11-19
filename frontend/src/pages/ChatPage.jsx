@@ -98,6 +98,21 @@ export default function ChatPage() {
     setMessages(detail.messages || []);
   }
 
+  async function deleteChat(id) {
+    if (!id) return;
+    const ok = window.confirm("این گفتگو پاک شود؟");
+    if (!ok) return;
+    setError("");
+    try {
+      await api.deleteConversation(id);
+      const nextId = activeId === id ? null : activeId;
+      await loadConversations(nextId);
+      setShowConvs(false);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <div className="chat-layout">
       <section className="chat-panel">
@@ -112,6 +127,11 @@ export default function ChatPage() {
             <button className="btn ghost conv-toggle" type="button" onClick={() => setShowConvs((v) => !v)}>
               {showConvs ? "بستن" : "گفتگوها"}
             </button>
+            {activeId && (
+              <button className="btn ghost danger" type="button" onClick={() => deleteChat(activeId)}>
+                پاک کردن
+              </button>
+            )}
             <button className="btn soft" type="button" onClick={newChat}>
               جدید
             </button>
@@ -126,14 +146,27 @@ export default function ChatPage() {
               </div>
             )}
             {conversations.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                className={`conv-item ${activeId === c.id ? "active" : ""}`}
-                onClick={() => selectConversation(c.id)}
-              >
-                {c.title}
-              </button>
+              <div key={c.id} className={`conv-row ${activeId === c.id ? "active" : ""}`}>
+                <button
+                  type="button"
+                  className="conv-item"
+                  onClick={() => selectConversation(c.id)}
+                >
+                  {c.title}
+                </button>
+                <button
+                  type="button"
+                  className="conv-delete"
+                  title="پاک کردن"
+                  aria-label="پاک کردن گفتگو"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteChat(c.id);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
             ))}
           </div>
 
@@ -176,10 +209,7 @@ export default function ChatPage() {
       <section className="browser-panel">
         <div className="panel-header">
           <div>
-            <strong>Safari Live</strong>
-            <div className="muted" style={{ fontSize: "0.82rem" }}>
-              نمای زندهٔ کرومِ ایجنت
-            </div>
+            <strong>مرورگر</strong>
           </div>
           <button className="btn ghost" type="button" onClick={() => api.browserReset()}>
             ریست

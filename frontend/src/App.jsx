@@ -2,10 +2,8 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import Layout from "./components/Layout";
 import ChatPage from "./pages/ChatPage";
-import CredentialsPage from "./pages/CredentialsPage";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
-import TasksPage from "./pages/TasksPage";
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -28,8 +26,6 @@ export default function App() {
         }
       >
         <Route index element={<ChatPage />} />
-        <Route path="tasks" element={<TasksPage />} />
-        <Route path="credentials" element={<CredentialsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

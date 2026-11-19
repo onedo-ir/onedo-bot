@@ -49,14 +49,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ content }),
     }),
-  tasks: () => request("/api/tasks"),
-  cancelTask: (id) => request(`/api/tasks/${id}/cancel`, { method: "POST" }),
-  replyTask: (id, answer) =>
-    request(`/api/tasks/${id}/reply`, { method: "POST", body: JSON.stringify({ answer }) }),
-  credentials: () => request("/api/credentials"),
-  createCredential: (body) =>
-    request("/api/credentials", { method: "POST", body: JSON.stringify(body) }),
-  deleteCredential: (id) => request(`/api/credentials/${id}`, { method: "DELETE" }),
   browserStatus: () => request("/api/browser/status"),
   browserReset: () => request("/api/browser/reset", { method: "POST" }),
 };

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.browser_client import BrowserClient
 from app.config import get_settings
-from app.models import AgentTask, Message, MessageRole, TaskStatus
+from app.models import AgentTask, CredentialVault, Message, MessageRole, TaskStatus
 
 MAX_STEPS = 15
 
@@ -18,6 +18,41 @@ def resolve_ai_config() -> tuple[str, str, str]:
     base_url = (settings.openai_compatible_base_url or "").rstrip("/")
     model = (settings.openai_compatible_model or "auto").strip() or "auto"
     return api_key, base_url, model
+
+
+def list_vault(db: Session) -> list[CredentialVault]:
+    return db.query(CredentialVault).order_by(CredentialVault.id.asc()).all()
+
+
+def format_vault_for_prompt(items: list[CredentialVault]) -> str:
+    if not items:
+        return "(empty)"
+    lines = []
+    for item in items:
+        lines.append(
+            f"- id={item.id} | label={item.label} | site={item.site_url or '-'} | "
+            f"username={item.username or '-'} | note={item.secret_note or '-'}"
+        )
+    return "\n".join(lines)
+
+
+def save_vault_item(
+    db: Session,
+    *,
+    label: str,
+    site_url: str = "",
+    username: str = "",
+    secret_note: str = "",
+) -> CredentialVault:
+    item = CredentialVault(
+        label=(label or "بدون برچسب").strip()[:255],
+        site_url=(site_url or "").strip()[:1024],
+        username=(username or "").strip()[:255],
+        secret_note=(secret_note or "").strip(),
+    )
+    db.add(item)
+    db.flush()
+    return item
 
 
 def append_step(task: AgentTask, step: dict[str, Any]) -> None:
@@ -55,6 +90,7 @@ async def call_llm_next_action(
     page_title: str,
     page_text: str,
     history: list[dict[str, Any]],
+    vault_text: str,
 ) -> dict[str, Any]:
     api_key, base_url, model = resolve_ai_config()
 
@@ -71,9 +107,10 @@ async def call_llm_next_action(
     system = (
         "You are Onedo bot, a careful browser agent for Persian users.\n"
         "Decide ONLY the single next action. Return STRICT JSON object with keys:\n"
-        '  action: one of navigate|click|type|press|wait|extract|ask|done\n'
+        "  action: one of navigate|click|type|press|wait|extract|save_credential|ask|done\n"
         "  url (navigate), selector (click/type/extract), text (type),\n"
         "  key (press, e.g. Enter), ms (wait), question (ask),\n"
+        "  label/site_url/username/secret_note (save_credential),\n"
         "  summary (Persian, for done), reason (short).\n"
         "Rules:\n"
         "- Use the browser only when needed for the user goal.\n"
@@ -81,6 +118,8 @@ async def call_llm_next_action(
         "search unless the user explicitly asked to search Google or no better "
         "URL is known.\n"
         "- After typing in a search box or form, press Enter or click submit.\n"
+        "- Credential vault is private (not shown in UI). You MAY read the vault "
+        "list provided below and use save_credential to store new login notes.\n"
         "- If unsure, login is required, or an irreversible action is needed, use ask.\n"
         "- When the goal is finished (or pure Q&A with no browsing needed), use done "
         "with a clear Persian summary.\n"
@@ -95,6 +134,7 @@ async def call_llm_next_action(
         f"User instruction:\n{instruction}\n\n"
         f"Current page URL: {page_url or 'about:blank'}\n"
         f"Current page title: {page_title or ''}\n\n"
+        f"Credential vault (readable by agent only):\n{vault_text}\n\n"
         f"Recent actions:\n"
         + ("\n".join(history_lines) if history_lines else "(none)")
         + "\n\n"
@@ -170,12 +210,14 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
             except Exception:  # noqa: BLE001
                 page_text = ""
 
+            vault_items = list_vault(db)
             decision = await call_llm_next_action(
                 task.instruction,
                 page_url,
                 page_title,
                 page_text,
                 history,
+                format_vault_for_prompt(vault_items),
             )
             action = (decision.get("action") or "").lower().strip()
             reason = decision.get("reason") or ""
@@ -225,6 +267,23 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 detail = last_extract[:120]
                 append_step(task, {"action": "extract", "detail": detail, "reason": reason})
                 history.append({"action": "extract", "detail": detail, "reason": reason})
+
+            elif action == "save_credential":
+                item = save_vault_item(
+                    db,
+                    label=str(decision.get("label") or ""),
+                    site_url=str(decision.get("site_url") or page_url or ""),
+                    username=str(decision.get("username") or ""),
+                    secret_note=str(decision.get("secret_note") or ""),
+                )
+                detail = f"id={item.id} label={item.label}"
+                append_step(
+                    task,
+                    {"action": "save_credential", "detail": detail, "reason": reason},
+                )
+                history.append(
+                    {"action": "save_credential", "detail": detail, "reason": reason}
+                )
 
             elif action == "ask":
                 task.status = TaskStatus.waiting_user
