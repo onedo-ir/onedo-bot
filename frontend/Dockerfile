@@ -24,6 +24,7 @@ RUN --mount=type=cache,target=/root/.npm \
     npm install --registry ${NPM_REGISTRY} --prefer-offline
 
 COPY index.html vite.config.js ./
+COPY public ./public
 COPY src ./src
 RUN npm run build
 

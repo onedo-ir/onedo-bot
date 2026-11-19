@@ -1,5 +1,7 @@
 import base64
+import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,8 @@ WIDTH = 1280
 HEIGHT = 800
 # Shared docker volume browser_data → cookies, localStorage, cache survive restarts.
 USER_DATA_DIR = Path("/data/browser/chromium-profile")
+# Explicit cookie export for the agent (in addition to Chromium profile).
+COOKIES_FILE = Path("/data/browser/cookies.json")
 
 state: dict[str, Any] = {"playwright": None, "context": None, "page": None}
 
@@ -61,6 +65,24 @@ class ScrollIn(BaseModel):
     delta_y: float = 0
 
 
+class CookieSetIn(BaseModel):
+    name: str
+    value: str
+    domain: str
+    path: str = "/"
+    expires: float | int | None = None
+    httpOnly: bool = False
+    secure: bool = False
+    sameSite: str | None = "Lax"
+    url: str | None = None
+
+
+class CookieDeleteIn(BaseModel):
+    name: str
+    domain: str | None = None
+    path: str | None = None
+
+
 def clamp_point(x: float, y: float) -> tuple[int, int]:
     return (
         max(0, min(WIDTH - 1, int(round(x)))),
@@ -74,6 +96,105 @@ async def ensure_page() -> Page:
     if page is None or context is None:
         raise HTTPException(status_code=503, detail="browser not ready")
     return page
+
+
+def ensure_context() -> BrowserContext:
+    context: BrowserContext | None = state.get("context")
+    if context is None:
+        raise HTTPException(status_code=503, detail="browser not ready")
+    return context
+
+
+def _normalize_same_site(value: str | None) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    key = raw.lower()
+    mapping = {
+        "lax": "Lax",
+        "strict": "Strict",
+        "none": "None",
+    }
+    return mapping.get(key, raw if raw in {"Lax", "Strict", "None"} else "Lax")
+
+
+def cookie_public(row: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "name": row.get("name") or "",
+        "value": row.get("value") or "",
+        "domain": row.get("domain") or "",
+        "path": row.get("path") or "/",
+        "expires": row.get("expires", -1),
+        "httpOnly": bool(row.get("httpOnly")),
+        "secure": bool(row.get("secure")),
+    }
+    same = row.get("sameSite")
+    if same:
+        out["sameSite"] = same
+    return out
+
+
+async def export_cookies_to_file(context: BrowserContext | None = None) -> dict[str, Any]:
+    ctx = context or ensure_context()
+    cookies = [cookie_public(c) for c in await ctx.cookies()]
+    COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "cookies": cookies,
+    }
+    COOKIES_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"path": str(COOKIES_FILE), "count": len(cookies), "cookies": cookies}
+
+
+def read_cookies_file() -> list[dict[str, Any]]:
+    try:
+        raw = json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if isinstance(raw, list):
+        return [c for c in raw if isinstance(c, dict)]
+    if isinstance(raw, dict) and isinstance(raw.get("cookies"), list):
+        return [c for c in raw["cookies"] if isinstance(c, dict)]
+    return []
+
+
+async def import_cookies_from_file(context: BrowserContext | None = None) -> dict[str, Any]:
+    ctx = context or ensure_context()
+    rows = read_cookies_file()
+    ready: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        value = str(row.get("value") or "")
+        domain = str(row.get("domain") or "").strip()
+        if not name or not domain:
+            continue
+        item: dict[str, Any] = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": str(row.get("path") or "/") or "/",
+            "httpOnly": bool(row.get("httpOnly")),
+            "secure": bool(row.get("secure")),
+        }
+        expires = row.get("expires")
+        if expires is not None:
+            try:
+                item["expires"] = float(expires)
+            except (TypeError, ValueError):
+                pass
+        same = _normalize_same_site(row.get("sameSite"))
+        if same:
+            item["sameSite"] = same
+        ready.append(item)
+    if ready:
+        try:
+            await ctx.add_cookies(ready)
+        except PlaywrightError as exc:
+            raise http_playwright_error(exc) from exc
+    exported = await export_cookies_to_file(ctx)
+    return {"imported": len(ready), **exported}
 
 
 def http_playwright_error(exc: Exception) -> HTTPException:
@@ -269,6 +390,7 @@ async def first_actionable(page: Page, selector: str, timeout: int = 12000) -> L
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
     pw = await async_playwright().start()
     # Persistent profile keeps cookies / localStorage / HTTP cache across container restarts.
     context = await pw.chromium.launch_persistent_context(
@@ -284,7 +406,19 @@ async def lifespan(_: FastAPI):
     state["playwright"] = pw
     state["context"] = context
     state["page"] = page
+    # Merge any agent-managed cookie file into the live context, then re-export.
+    try:
+        await import_cookies_from_file(context)
+    except Exception:  # noqa: BLE001
+        try:
+            await export_cookies_to_file(context)
+        except Exception:  # noqa: BLE001
+            pass
     yield
+    try:
+        await export_cookies_to_file(context)
+    except Exception:  # noqa: BLE001
+        pass
     await context.close()
     await pw.stop()
 
@@ -311,6 +445,10 @@ async def navigate(payload: NavigateIn):
     if url and not url.startswith(("http://", "https://", "about:", "data:")):
         url = "https://" + url
     await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+    try:
+        await export_cookies_to_file()
+    except Exception:  # noqa: BLE001
+        pass
     return {"url": page.url, "title": await page.title()}
 
 
@@ -475,6 +613,119 @@ async def input_scroll(payload: ScrollIn):
         "delta_x": dx,
         "delta_y": dy,
     }
+
+
+@app.get("/cookies")
+async def list_cookies(domain: str | None = None):
+    """List browser cookies; optional domain substring filter. Also refreshes cookies.json."""
+    context = ensure_context()
+    cookies = [cookie_public(c) for c in await context.cookies()]
+    needle = (domain or "").strip().lower()
+    if needle:
+        cookies = [
+            c
+            for c in cookies
+            if needle in (c.get("domain") or "").lower()
+            or needle in (c.get("name") or "").lower()
+        ]
+    try:
+        await export_cookies_to_file(context)
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "path": str(COOKIES_FILE),
+        "count": len(cookies),
+        "cookies": cookies,
+    }
+
+
+@app.post("/cookies")
+async def set_cookie(payload: CookieSetIn):
+    """Add or overwrite a cookie, then persist cookies.json."""
+    context = ensure_context()
+    name = (payload.name or "").strip()
+    domain = (payload.domain or "").strip()
+    if not name or not domain:
+        raise HTTPException(status_code=422, detail="name and domain are required")
+    item: dict[str, Any] = {
+        "name": name,
+        "value": payload.value or "",
+        "domain": domain,
+        "path": (payload.path or "/") or "/",
+        "httpOnly": bool(payload.httpOnly),
+        "secure": bool(payload.secure),
+    }
+    if payload.url:
+        item["url"] = payload.url.strip()
+    if payload.expires is not None:
+        try:
+            item["expires"] = float(payload.expires)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="invalid expires") from exc
+    same = _normalize_same_site(payload.sameSite)
+    if same:
+        item["sameSite"] = same
+    try:
+        await context.add_cookies([item])
+    except PlaywrightError as exc:
+        raise http_playwright_error(exc) from exc
+    exported = await export_cookies_to_file(context)
+    return {"ok": True, "cookie": cookie_public(item), **exported}
+
+
+@app.delete("/cookies")
+async def delete_cookie(payload: CookieDeleteIn):
+    """Delete cookie(s) by name (+ optional domain/path), then persist cookies.json."""
+    context = ensure_context()
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name is required")
+    domain = (payload.domain or "").strip().lower()
+    path = (payload.path or "").strip()
+    current = await context.cookies()
+    remaining: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    for row in current:
+        row_name = str(row.get("name") or "")
+        row_domain = str(row.get("domain") or "").lower()
+        row_path = str(row.get("path") or "")
+        match = row_name == name
+        if match and domain and domain not in row_domain and row_domain not in domain:
+            match = False
+        if match and path and path != row_path:
+            match = False
+        if match:
+            removed.append(cookie_public(row))
+        else:
+            remaining.append(row)
+    await context.clear_cookies()
+    if remaining:
+        # Playwright add_cookies rejects some internal-only fields; keep public shape.
+        cleaned = [cookie_public(c) for c in remaining]
+        # Drop expires=-1 if it confuses some versions — keep as session via omitting?
+        ready: list[dict[str, Any]] = []
+        for c in cleaned:
+            item = {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c["domain"],
+                "path": c.get("path") or "/",
+                "httpOnly": bool(c.get("httpOnly")),
+                "secure": bool(c.get("secure")),
+            }
+            exp = c.get("expires")
+            if exp is not None and float(exp) > 0:
+                item["expires"] = float(exp)
+            same = _normalize_same_site(c.get("sameSite"))
+            if same:
+                item["sameSite"] = same
+            ready.append(item)
+        try:
+            await context.add_cookies(ready)
+        except PlaywrightError as exc:
+            raise http_playwright_error(exc) from exc
+    exported = await export_cookies_to_file(context)
+    return {"ok": True, "removed": len(removed), "removed_cookies": removed, **exported}
 
 
 @app.post("/reset")

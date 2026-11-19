@@ -44,8 +44,10 @@
 - توقف و پرسش از کاربر هنگام ابهام/خطا
 - خلاصه متنی نتیجه در خود برنامه
 - در صورت نیاز، ایجنت اطلاعات ورود را فقط در فایل `/data/browser/credentials.json` ذخیره/می‌خواند (نه پنل، نه جدول DB)
+- حافظهٔ هر چت برای ایجنت: `/data/browser/chat_memory/{conversation_id}.json` (URLها، selector دکمه‌های کلیک‌شده، فیلدهای تایپ‌شده، لینک‌های مهم)؛ با حذف گفتگو پاک می‌شود؛ در UI نشان داده نمی‌شود
+- کوکی‌های مرورگر علاوه بر پروفایل Chromium در `/data/browser/cookies.json` هم export می‌شوند؛ ایجنت با اکشن‌های `list_cookies` / `set_cookie` / `delete_cookie` مدیریت می‌کند (نه UI پنل)
 - پروفایل پایدار Chromium در `/data/browser/chromium-profile` (ولوم `browser_data`) نگه داشته می‌شود تا کوکی، localStorage و کش بعد از ری‌استارت از بین نروند
-- کارهای دوره‌ای: جدول `scheduled_tasks` + فایل مراحل در `/data/browser/scheduled_tasks/{id}.md`؛ ایجنت با اکشن `schedule_periodic_task` ثبت می‌کند؛ زمان‌بند بک‌اند سر `next_run_at` اجرا می‌کند؛ UI در `/app/schedules` فقط لیست/حذف
+- کارهای دوره‌ای: جدول `scheduled_tasks` + فایل playbook در `/data/browser/scheduled_tasks/{id}.md` (هدف کاربر + مسیر جلسه با selector/URL + کنترل‌های صفحه + مراحل شماره‌دار navigate/click/type)؛ ایجنت با اکشن `schedule_periodic_task` ثبت می‌کند و مراحل مبهم رد می‌شوند؛ زمان‌بند بک‌اند سر `next_run_at` همان playbook را به‌عنوان instruction اجرا می‌کند؛ UI در `/app/schedules` فقط لیست/حذف
 
 ## نباید
 

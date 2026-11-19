@@ -1,5 +1,6 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../AuthContext";
+import BrandLogo from "./BrandLogo";
 
 export default function Layout() {
   const { user, logout, setTheme } = useAuth();
@@ -14,9 +15,9 @@ export default function Layout() {
         <div className="topbar">
           <div className="topbar-start">
             <Link to="/app" className="brand-mark brand-link" style={{ marginBottom: 0 }}>
-              <div className="brand-dot" aria-hidden="true" />
+              <BrandLogo size={40} />
               <div>
-                <strong>Onedo</strong>
+                <strong>Onedo bot</strong>
                 <div className="muted topbar-subtitle">
                   به ایجنت بگو چه می‌خواهی؛ خودش وقتی لازم باشد مرورگر را کنترل می‌کند.
                 </div>

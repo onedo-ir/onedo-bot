@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.agent_service import run_task
+from app.chat_memory import delete_chat_memory
 from app.database import SessionLocal, get_db
 from app.models import AgentTask, Conversation, Message, MessageRole, TaskStatus
 from app.schemas import ConversationCreate, ConversationDetail, ConversationOut, MessageCreate, MessageOut, TaskOut
@@ -59,6 +60,7 @@ def delete_conversation(
         raise HTTPException(status_code=404, detail="گفتگو یافت نشد")
     db.delete(conv)
     db.commit()
+    delete_chat_memory(conversation_id)
     return {"ok": True}
 
 

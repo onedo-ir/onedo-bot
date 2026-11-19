@@ -8,6 +8,14 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.browser_client import BrowserClient
+from app.chat_memory import (
+    format_chat_memory_for_prompt,
+    load_chat_memory,
+    record_click,
+    record_field,
+    record_links_from_actions,
+    record_navigate,
+)
 from app.config import get_settings
 from app.models import AgentTask, Message, MessageRole, TaskStatus
 from app.schedule_service import (
@@ -19,6 +27,7 @@ from app.schedule_service import (
 MAX_STEPS = 15
 # Persistent file vault (no panel UI / no DB table). Shared browser_data volume.
 CREDENTIALS_FILE = Path("/data/browser/credentials.json")
+COOKIES_FILE = Path("/data/browser/cookies.json")
 
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+98|0)?9\d{9}(?!\d)|(?<!\d)0\d{10,11}(?!\d)")
@@ -71,6 +80,37 @@ def _write_credentials_file(items: list[dict[str, Any]]) -> None:
 
 def list_vault() -> list[dict[str, Any]]:
     return _read_credentials_file()
+
+
+def format_cookies_file_for_prompt(*, max_rows: int = 40) -> str:
+    """Compact cookie index for the LLM (names/domains; values truncated)."""
+    try:
+        raw = json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return f"(empty or missing — {COOKIES_FILE})"
+    rows: list[Any]
+    if isinstance(raw, dict):
+        rows = raw.get("cookies") if isinstance(raw.get("cookies"), list) else []
+        updated = raw.get("updated_at") or "-"
+    elif isinstance(raw, list):
+        rows = raw
+        updated = "-"
+    else:
+        return f"(empty or missing — {COOKIES_FILE})"
+    lines = [f"file={COOKIES_FILE} updated_at={updated} count={len(rows)}"]
+    for row in rows[:max_rows]:
+        if not isinstance(row, dict):
+            continue
+        value = str(row.get("value") or "")
+        if len(value) > 24:
+            value = value[:12] + "…" + value[-6:]
+        lines.append(
+            f"- name={row.get('name') or '-'} | domain={row.get('domain') or '-'} | "
+            f"path={row.get('path') or '/'} | value={value or '-'}"
+        )
+    if len(rows) > max_rows:
+        lines.append(f"… +{len(rows) - max_rows} more (use list_cookies)")
+    return "\n".join(lines)
 
 
 def format_vault_for_prompt(items: list[dict[str, Any]]) -> str:
@@ -182,13 +222,34 @@ def _evidence_corpus(
     history: list[dict[str, Any]],
     last_extract: str = "",
     page_actions_text: str = "",
+    chat_memory_text: str = "",
 ) -> str:
-    parts = [instruction, page_url, page_text, vault_text, last_extract, page_actions_text]
+    parts = [
+        instruction,
+        page_url,
+        page_text,
+        vault_text,
+        last_extract,
+        page_actions_text,
+        chat_memory_text,
+    ]
     for item in history[-12:]:
         parts.append(str(item.get("detail") or ""))
         parts.append(str(item.get("reason") or ""))
         parts.append(str(item.get("action") or ""))
     return _norm("\n".join(parts))
+
+
+def _action_text_for_selector(
+    page_actions: list[dict[str, Any]] | None, selector: str
+) -> str:
+    sel = (selector or "").strip()
+    if not sel or not page_actions:
+        return ""
+    for item in page_actions:
+        if (item.get("selector") or "").strip() == sel:
+            return (item.get("text") or "").strip()[:120]
+    return ""
 
 
 def _host_stem(host: str) -> str:
@@ -268,6 +329,7 @@ def apply_decision_guardrails(
     history: list[dict[str, Any]],
     last_extract: str = "",
     page_actions_text: str = "",
+    chat_memory_text: str = "",
 ) -> dict[str, Any]:
     """Hard guardrails: do not invent URLs/values; prefer page evidence; ask when unsure."""
     out = dict(decision or {})
@@ -280,6 +342,7 @@ def apply_decision_guardrails(
         history,
         last_extract,
         page_actions_text,
+        chat_memory_text,
     )
     blank = (page_url or "").startswith("about:blank") or not (page_url or "").strip()
 
@@ -352,6 +415,8 @@ async def call_llm_next_action(
     page_actions_text: str = "(none)",
     last_extract: str = "",
     schedules_text: str = "(none)",
+    chat_memory_text: str = "(empty)",
+    cookies_text: str = "(empty)",
 ) -> dict[str, Any]:
     api_key, base_url, model = resolve_ai_config()
 
@@ -369,11 +434,16 @@ async def call_llm_next_action(
         "You are Onedo bot, a careful browser agent for Persian users.\n"
         "Decide ONLY the single next action. Return STRICT JSON object with keys:\n"
         "  action: one of navigate|click|type|press|wait|extract|read_html|"
-        "save_credential|schedule_periodic_task|ask|done\n"
+        "save_credential|list_cookies|set_cookie|delete_cookie|"
+        "schedule_periodic_task|ask|done\n"
         "  url (navigate), selector (click/type/extract/read_html), text (type),\n"
         "  query (optional search string for read_html),\n"
         "  key (press, e.g. Enter), ms (wait), question (ask),\n"
         "  label/site_url/username/secret_note (save_credential),\n"
+        "  domain (optional filter for list_cookies),\n"
+        "  name/value/domain/path/expires/httpOnly/secure/sameSite "
+        "(set_cookie; name+value+domain required),\n"
+        "  name/domain/path (delete_cookie; name required),\n"
         "  title/interval_minutes/steps/run_immediately (schedule_periodic_task),\n"
         "  summary (Persian, for done), reason (short).\n"
         "\n"
@@ -401,6 +471,12 @@ async def call_llm_next_action(
         "If unsure, ask or extract again.\n"
         "11) Credentials are stored only in a private file (not the panel). Read them "
         "from context and use save_credential when the user asks to remember login info.\n"
+        "11b) Per-chat memory file stores important URLs, clicked button selectors, typed "
+        "fields, and key links for THIS conversation. Prefer reusing those evidenced "
+        "selectors/URLs when you return to the same page. Do not invent new ones.\n"
+        "11c) Browser cookies are exported to /data/browser/cookies.json. Use "
+        "list_cookies / set_cookie / delete_cookie when the user asks to inspect, add, "
+        "or remove cookies (name+domain required for set; never invent cookie values).\n"
         "12) Pure Q&A with no browsing needed → done with a Persian answer.\n"
         "13) When interactive list/text is not enough to find a control or structure, "
         "use read_html (optionally with query=keyword) to inspect cleaned HTML and "
@@ -411,11 +487,20 @@ async def call_llm_next_action(
         "  - title: short Persian title\n"
         "  - interval_minutes: integer minutes between runs (min 5). "
         "Convert phrases like every 2 hours→120, daily→1440.\n"
-        "  - steps: DETAILED Persian step-by-step playbook the future agent must follow "
-        "(URLs, clicks, fields, checks). Base steps on evidenced user intent and "
-        "current/learned page facts — never invent deep URLs/values.\n"
+        "  - steps: a DETAILED numbered playbook the FUTURE agent will follow blindly. "
+        "MUST include concrete browser actions with evidenced URLs/selectors/button text "
+        "from this session (user instruction + current page actions + history). "
+        "Preferred format example:\n"
+        "    1. navigate → url=https://example.com/login\n"
+        "    2. click → selector=button.login | text=\"ورود\"\n"
+        "    3. type → selector=input[name=user] | text=<from credentials/user>\n"
+        "    4. press → key=Enter\n"
+        "    5. extract → selector=body | check that …\n"
+        "    6. done when …\n"
+        "Never invent deep URLs/selectors. If you have not yet discovered the real "
+        "controls, browse/extract first OR ask — do not schedule vague steps.\n"
         "  - run_immediately: optional bool (default false)\n"
-        "If interval or steps are unclear → ask first. After scheduling → done with "
+        "If interval or steps are unclear/vague → ask first. After scheduling → done with "
         "confirmation (id + interval).\n"
         "Respond with JSON only."
     )
@@ -430,6 +515,10 @@ async def call_llm_next_action(
         f"Current page URL: {page_url or 'about:blank'}\n"
         f"Current page title: {page_title or ''}\n\n"
         f"Credentials file (agent-only; /data/browser/credentials.json):\n{vault_text}\n\n"
+        f"Browser cookies file (agent-only; /data/browser/cookies.json):\n{cookies_text}\n\n"
+        "This chat's memory (agent-only; /data/browser/chat_memory/{id}.json) — "
+        "clicked buttons, important links/URLs, typed fields:\n"
+        f"{chat_memory_text}\n\n"
         "Existing periodic schedules (DB + /data/browser/scheduled_tasks/*.md):\n"
         f"{schedules_text}\n\n"
         "Interactive elements on CURRENT page only "
@@ -575,6 +664,16 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
             vault_items = list_vault()
             vault_text = format_vault_for_prompt(vault_items)
             schedules_text = format_schedules_for_prompt(list_scheduled_tasks(db))
+            chat_memory = load_chat_memory(task.conversation_id)
+            # Keep important hrefs from the live page for later turns in this chat.
+            if page_actions:
+                chat_memory = record_links_from_actions(
+                    task.conversation_id,
+                    page_url=page_url,
+                    page_actions=page_actions,
+                )
+            chat_memory_text = format_chat_memory_for_prompt(chat_memory)
+            cookies_text = format_cookies_file_for_prompt()
             decision = await call_llm_next_action(
                 task.instruction,
                 page_url,
@@ -585,6 +684,8 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 page_actions_text,
                 last_extract,
                 schedules_text,
+                chat_memory_text,
+                cookies_text,
             )
             decision = apply_decision_guardrails(
                 decision,
@@ -595,6 +696,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 history=history,
                 last_extract=last_extract,
                 page_actions_text=page_actions_text,
+                chat_memory_text=chat_memory_text,
             )
             if _task_was_cancelled(db, task):
                 return task
@@ -617,7 +719,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                             decision.get("url") or "about:blank"
                         )
                         task.current_url = result.get("url")
-                        detail = task.current_url
+                        detail = f"url={task.current_url}"
                         append_step(
                             task,
                             {"action": "navigate", "detail": detail, "reason": reason},
@@ -625,25 +727,41 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                         history.append(
                             {"action": "navigate", "detail": detail, "reason": reason}
                         )
+                        record_navigate(
+                            task.conversation_id,
+                            url=str(task.current_url or ""),
+                            title=str(result.get("title") or page_title or ""),
+                            note=reason or "navigated",
+                        )
 
                     elif action == "click":
                         selector = decision.get("selector") or "body"
+                        click_page = page_url
                         result = await browser.click(selector)
                         task.current_url = result.get("url", task.current_url)
+                        detail = f"selector={selector}"
                         append_step(
                             task,
-                            {"action": "click", "detail": selector, "reason": reason},
+                            {"action": "click", "detail": detail, "reason": reason},
                         )
                         history.append(
-                            {"action": "click", "detail": selector, "reason": reason}
+                            {"action": "click", "detail": detail, "reason": reason}
+                        )
+                        record_click(
+                            task.conversation_id,
+                            selector=str(selector),
+                            page_url=str(click_page or ""),
+                            reason=reason,
+                            text=_action_text_for_selector(page_actions, str(selector)),
                         )
 
                     elif action == "type":
                         selector = decision.get("selector") or "input"
                         text = decision.get("text") or ""
+                        type_page = page_url
                         result = await browser.type_text(selector, text)
                         task.current_url = result.get("url", task.current_url)
-                        detail = text[:80]
+                        detail = f"selector={selector} | text={text[:120]}"
                         append_step(
                             task,
                             {"action": "type", "detail": detail, "reason": reason},
@@ -651,17 +769,28 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                         history.append(
                             {"action": "type", "detail": detail, "reason": reason}
                         )
+                        record_field(
+                            task.conversation_id,
+                            selector=str(selector),
+                            page_url=str(type_page or ""),
+                            note="typed",
+                        )
 
                     elif action == "press":
                         key = decision.get("key") or "Enter"
-                        result = await browser.press(key, decision.get("selector"))
+                        press_selector = decision.get("selector")
+                        result = await browser.press(key, press_selector)
                         task.current_url = result.get("url", task.current_url)
+                        detail = (
+                            f"key={key}"
+                            + (f" | selector={press_selector}" if press_selector else "")
+                        )
                         append_step(
                             task,
-                            {"action": "press", "detail": key, "reason": reason},
+                            {"action": "press", "detail": detail, "reason": reason},
                         )
                         history.append(
-                            {"action": "press", "detail": key, "reason": reason}
+                            {"action": "press", "detail": detail, "reason": reason}
                         )
 
                     elif action == "wait":
@@ -685,7 +814,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                         result = await browser.extract(selector)
                         last_extract = (result.get("text") or "")[:2000]
                         task.current_url = result.get("url", task.current_url)
-                        detail = last_extract[:120]
+                        detail = f"selector={selector} | text={last_extract[:160]}"
                         append_step(
                             task,
                             {"action": "extract", "detail": detail, "reason": reason},
@@ -754,6 +883,180 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                     db.commit()
                     continue
 
+            elif action == "list_cookies":
+                domain_filter = str(decision.get("domain") or "").strip() or None
+                try:
+                    result = await browser.list_cookies(domain_filter)
+                except Exception as cookie_exc:  # noqa: BLE001
+                    detail = str(cookie_exc)[:300]
+                    append_step(
+                        task,
+                        {
+                            "action": "list_cookies_error",
+                            "detail": detail,
+                            "reason": reason,
+                        },
+                    )
+                    history.append(
+                        {
+                            "action": "list_cookies_error",
+                            "detail": detail,
+                            "reason": reason,
+                        }
+                    )
+                    db.commit()
+                    continue
+                cookies = result.get("cookies") or []
+                lines: list[str] = []
+                for row in cookies[:50]:
+                    if not isinstance(row, dict):
+                        continue
+                    val = str(row.get("value") or "")
+                    if len(val) > 40:
+                        val = val[:20] + "…" + val[-8:]
+                    lines.append(
+                        f"{row.get('name')}|{row.get('domain')}|{row.get('path')}|{val}"
+                    )
+                detail = (
+                    f"count={result.get('count', len(cookies))} "
+                    f"file={result.get('path') or COOKIES_FILE}\n"
+                    + ("\n".join(lines) if lines else "(none)")
+                )
+                last_extract = detail[:4000]
+                append_step(
+                    task,
+                    {"action": "list_cookies", "detail": detail[:500], "reason": reason},
+                )
+                history.append(
+                    {"action": "list_cookies", "detail": detail[:800], "reason": reason}
+                )
+
+            elif action == "set_cookie":
+                name = str(decision.get("name") or "").strip()
+                value = str(decision.get("value") or "")
+                domain = str(decision.get("domain") or "").strip()
+                if not name or not domain:
+                    task.status = TaskStatus.waiting_user
+                    task.waiting_question = (
+                        "برای set_cookie باید name و domain را مشخص کنید "
+                        "(value هم لازم است)."
+                    )
+                    append_step(
+                        task,
+                        {
+                            "action": "set_cookie_ask",
+                            "detail": task.waiting_question,
+                            "reason": reason or "missing_fields",
+                        },
+                    )
+                    _add_assistant(db, task.conversation_id, task.waiting_question)
+                    db.commit()
+                    db.refresh(task)
+                    return task
+                path = str(decision.get("path") or "/") or "/"
+                same_site = decision.get("sameSite") or decision.get("same_site") or "Lax"
+                expires = decision.get("expires")
+                try:
+                    result = await browser.set_cookie(
+                        name=name,
+                        value=value,
+                        domain=domain,
+                        path=path,
+                        expires=expires,
+                        http_only=bool(
+                            decision.get("httpOnly") or decision.get("http_only")
+                        ),
+                        secure=bool(decision.get("secure")),
+                        same_site=str(same_site) if same_site is not None else "Lax",
+                        url=str(decision.get("url") or "").strip() or None,
+                    )
+                except Exception as cookie_exc:  # noqa: BLE001
+                    detail = str(cookie_exc)[:300]
+                    append_step(
+                        task,
+                        {
+                            "action": "set_cookie_error",
+                            "detail": detail,
+                            "reason": reason,
+                        },
+                    )
+                    history.append(
+                        {
+                            "action": "set_cookie_error",
+                            "detail": detail,
+                            "reason": reason,
+                        }
+                    )
+                    db.commit()
+                    continue
+                detail = (
+                    f"set name={name} domain={domain} path={path} "
+                    f"file={result.get('path') or COOKIES_FILE} "
+                    f"count={result.get('count')}"
+                )
+                append_step(
+                    task,
+                    {"action": "set_cookie", "detail": detail, "reason": reason},
+                )
+                history.append(
+                    {"action": "set_cookie", "detail": detail, "reason": reason}
+                )
+
+            elif action == "delete_cookie":
+                name = str(decision.get("name") or "").strip()
+                if not name:
+                    task.status = TaskStatus.waiting_user
+                    task.waiting_question = "برای delete_cookie باید name کوکی را بدهید."
+                    append_step(
+                        task,
+                        {
+                            "action": "delete_cookie_ask",
+                            "detail": task.waiting_question,
+                            "reason": reason or "missing_name",
+                        },
+                    )
+                    _add_assistant(db, task.conversation_id, task.waiting_question)
+                    db.commit()
+                    db.refresh(task)
+                    return task
+                domain = str(decision.get("domain") or "").strip() or None
+                path = str(decision.get("path") or "").strip() or None
+                try:
+                    result = await browser.delete_cookie(
+                        name=name, domain=domain, path=path
+                    )
+                except Exception as cookie_exc:  # noqa: BLE001
+                    detail = str(cookie_exc)[:300]
+                    append_step(
+                        task,
+                        {
+                            "action": "delete_cookie_error",
+                            "detail": detail,
+                            "reason": reason,
+                        },
+                    )
+                    history.append(
+                        {
+                            "action": "delete_cookie_error",
+                            "detail": detail,
+                            "reason": reason,
+                        }
+                    )
+                    db.commit()
+                    continue
+                detail = (
+                    f"deleted name={name} domain={domain or '*'} "
+                    f"removed={result.get('removed')} "
+                    f"file={result.get('path') or COOKIES_FILE}"
+                )
+                append_step(
+                    task,
+                    {"action": "delete_cookie", "detail": detail, "reason": reason},
+                )
+                history.append(
+                    {"action": "delete_cookie", "detail": detail, "reason": reason}
+                )
+
             elif action == "save_credential":
                 item = save_vault_item(
                     label=str(decision.get("label") or ""),
@@ -783,7 +1086,8 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                     task.status = TaskStatus.waiting_user
                     task.waiting_question = (
                         "برای کار دوره‌ای عنوان، فاصلهٔ زمانی (حداقل ۵ دقیقه) "
-                        "و مراحل دقیق را مشخص کنید."
+                        "و مراحل دقیق را مشخص کنید. در مراحل برای هر کلیک/تایپ، "
+                        "selector یا متن دکمه و URL را بنویسید."
                     )
                     append_step(
                         task,
@@ -804,10 +1108,25 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                         interval_minutes=int(raw_interval),
                         steps=steps,
                         run_immediately=run_immediately,
+                        source_instruction=task.instruction or "",
+                        page_url=page_url or "",
+                        page_title=page_title or "",
+                        action_history=list(history),
+                        page_actions=list(page_actions),
                     )
                 except ValueError as exc:
                     task.status = TaskStatus.waiting_user
-                    task.waiting_question = f"ثبت کار دوره‌ای ممکن نشد: {exc}"
+                    msg = str(exc)
+                    if "too vague" in msg or "steps" in msg.lower():
+                        task.waiting_question = (
+                            "مراحل کار دوره‌ای خیلی کلی است. لطفاً مراحل شماره‌دار با "
+                            "URL و selector/متن دکمه بنویسید؛ مثلاً:\n"
+                            "1) navigate → url=…\n"
+                            "2) click → selector=… | text=…\n"
+                            "3) type → selector=… | text=…"
+                        )
+                    else:
+                        task.waiting_question = f"ثبت کار دوره‌ای ممکن نشد: {exc}"
                     append_step(
                         task,
                         {

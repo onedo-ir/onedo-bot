@@ -79,6 +79,52 @@ class BrowserClient:
     async def reset(self) -> dict[str, Any]:
         return await self._request("POST", "/reset")
 
+    async def list_cookies(self, domain: str | None = None) -> dict[str, Any]:
+        params = {"domain": domain} if domain else None
+        return await self._request("GET", "/cookies", params=params)
+
+    async def set_cookie(
+        self,
+        *,
+        name: str,
+        value: str,
+        domain: str,
+        path: str = "/",
+        expires: float | int | None = None,
+        http_only: bool = False,
+        secure: bool = False,
+        same_site: str | None = "Lax",
+        url: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": path or "/",
+            "httpOnly": http_only,
+            "secure": secure,
+            "sameSite": same_site,
+        }
+        if expires is not None:
+            payload["expires"] = expires
+        if url:
+            payload["url"] = url
+        return await self._request("POST", "/cookies", json=payload)
+
+    async def delete_cookie(
+        self,
+        *,
+        name: str,
+        domain: str | None = None,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"name": name}
+        if domain:
+            payload["domain"] = domain
+        if path:
+            payload["path"] = path
+        return await self._request("DELETE", "/cookies", json=payload)
+
     async def input_click(self, x: float, y: float, button: str = "left") -> dict[str, Any]:
         return await self._request(
             "POST", "/input/click", json={"x": x, "y": y, "button": button}

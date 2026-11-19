@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../AuthContext";
+import BrandLogo from "../components/BrandLogo";
 
 export default function LoginPage() {
   const { user, loading, login } = useAuth();
@@ -31,8 +32,11 @@ export default function LoginPage() {
     <div className="auth-shell">
       <form className="auth-card stack" onSubmit={onSubmit}>
         <div className="brand-mark">
-          <div className="brand-dot" aria-hidden="true" />
-          <h1>ورود</h1>
+          <BrandLogo size={52} />
+          <div>
+            <div className="brand-titling">Onedo bot</div>
+            <h1>ورود</h1>
+          </div>
         </div>
         {error && <div className="error-box">{error}</div>}
         <label>
