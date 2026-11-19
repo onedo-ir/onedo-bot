@@ -53,6 +53,34 @@ def format_vault_for_prompt(items: list[CredentialVault]) -> str:
     return "\n".join(lines)
 
 
+def format_page_actions_for_prompt(actions: list[dict[str, Any]], *, limit: int = 100) -> str:
+    """Only the current page's interactive tags; caller replaces this on every URL change."""
+    if not actions:
+        return "(none)"
+    lines: list[str] = []
+    for item in actions[:limit]:
+        kind = (item.get("kind") or "control").strip()
+        tag = (item.get("tag") or "?").strip()
+        text = (item.get("text") or "").strip()
+        href = (item.get("href") or "").strip()
+        typ = (item.get("type") or "").strip()
+        name = (item.get("name") or "").strip()
+        selector = (item.get("selector") or "").strip()
+        parts = [f"[{kind}]", tag]
+        if text:
+            parts.append(f'text="{text[:80]}"')
+        if href:
+            parts.append(f'href="{href[:220]}"')
+        if typ:
+            parts.append(f"type={typ}")
+        if name:
+            parts.append(f"name={name}")
+        if selector:
+            parts.append(f"selector={selector}")
+        lines.append("- " + " | ".join(parts))
+    return "\n".join(lines)
+
+
 def save_vault_item(
     db: Session,
     *,
@@ -112,8 +140,9 @@ def _evidence_corpus(
     vault_text: str,
     history: list[dict[str, Any]],
     last_extract: str = "",
+    page_actions_text: str = "",
 ) -> str:
-    parts = [instruction, page_url, page_text, vault_text, last_extract]
+    parts = [instruction, page_url, page_text, vault_text, last_extract, page_actions_text]
     for item in history[-12:]:
         parts.append(str(item.get("detail") or ""))
         parts.append(str(item.get("reason") or ""))
@@ -197,12 +226,19 @@ def apply_decision_guardrails(
     vault_text: str,
     history: list[dict[str, Any]],
     last_extract: str = "",
+    page_actions_text: str = "",
 ) -> dict[str, Any]:
     """Hard guardrails: do not invent URLs/values; prefer page evidence; ask when unsure."""
     out = dict(decision or {})
     action = (out.get("action") or "").lower().strip()
     corpus = _evidence_corpus(
-        instruction, page_url, page_text, vault_text, history, last_extract
+        instruction,
+        page_url,
+        page_text,
+        vault_text,
+        history,
+        last_extract,
+        page_actions_text,
     )
     blank = (page_url or "").startswith("about:blank") or not (page_url or "").strip()
 
@@ -272,6 +308,7 @@ async def call_llm_next_action(
     page_text: str,
     history: list[dict[str, Any]],
     vault_text: str,
+    page_actions_text: str = "(none)",
 ) -> dict[str, Any]:
     api_key, base_url, model = resolve_ai_config()
 
@@ -298,19 +335,21 @@ async def call_llm_next_action(
         "1) NEVER invent or guess: URLs, deep paths, phone numbers, emails, OTPs, "
         "prices, order ids, selectors, credentials, or form values.\n"
         "2) Evidence only: use facts from (a) the user instruction, (b) credential "
-        "vault, (c) current page URL/title/text, (d) prior extract/action results.\n"
+        "vault, (c) current page URL/title/text, (d) CURRENT-page interactive "
+        "elements list, (e) prior extract/action results.\n"
         "3) If a needed URL/value is missing from evidence → action=ask. Do not "
         "fabricate digikala/deep links, tracking URLs, or login fields.\n"
-        "4) On a loaded page: first understand the page. Prefer extract and then "
-        "click visible links/buttons described in page text. Prefer in-page click "
-        "over navigate to a guessed path on the same site.\n"
+        "4) On a loaded page: prefer click/type using selectors/hrefs from the "
+        "CURRENT interactive elements list (links, buttons, fields). That list is "
+        "replaced whenever the page/URL changes — never reuse old-page controls.\n"
         "5) navigate is allowed only for a URL the user gave, a link/domain clearly "
-        "present in page/vault, or the site homepage when the user named that site. "
-        "Never invent /product/... or query URLs.\n"
+        "present in page/actions/vault, or the site homepage when the user named "
+        "that site. Never invent /product/... or query URLs.\n"
         "6) Do NOT open Google/Bing unless the user explicitly asked to search there.\n"
         "7) After typing in a real visible field, press Enter or click the submit "
         "control that is evidenced on the page.\n"
-        "8) Selectors: ONE specific visible control. No broad comma-separated lists.\n"
+        "8) Selectors: ONE specific visible control from the current actions list "
+        "when possible. No broad comma-separated lists.\n"
         "9) If a previous action failed: change approach from page evidence, or ask.\n"
         "10) done summary must only state evidenced facts (from page/extract/user). "
         "If unsure, ask or extract again.\n"
@@ -328,11 +367,14 @@ async def call_llm_next_action(
         f"Current page URL: {page_url or 'about:blank'}\n"
         f"Current page title: {page_title or ''}\n\n"
         f"Credential vault (readable by agent only):\n{vault_text}\n\n"
+        "Interactive elements on CURRENT page only "
+        "(links/buttons/fields; previous page cleared):\n"
+        f"{page_actions_text[:3500]}\n\n"
         f"Recent actions:\n"
         + ("\n".join(history_lines) if history_lines else "(none)")
         + "\n\n"
-        "Reminder: do not guess URLs or values; use the page text below as evidence.\n\n"
-        f"Visible page text (truncated):\n{page_text[:4500]}\n"
+        "Reminder: do not guess URLs or values; use current-page actions + text.\n\n"
+        f"Visible page text (truncated):\n{page_text[:4000]}\n"
     )
 
     payload = {
@@ -393,6 +435,10 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
     browser = BrowserClient()
     history: list[dict[str, Any]] = []
     last_extract = ""
+    # Only ever holds actions for the page open in this iteration (replaced on URL change).
+    page_actions: list[dict[str, Any]] = []
+    page_actions_text = "(none)"
+    actions_for_url = ""
 
     try:
         for _ in range(MAX_STEPS):
@@ -404,6 +450,27 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
             except Exception:  # noqa: BLE001
                 page_text = ""
 
+            # Interactive tags are scoped to the open page; clear when URL changes.
+            if page_url != actions_for_url:
+                page_actions = []
+                page_actions_text = "(none)"
+                actions_for_url = page_url
+            try:
+                actions_payload = await browser.actions()
+                actions_url = actions_payload.get("url") or page_url
+                if actions_url != actions_for_url:
+                    page_actions = []
+                    page_actions_text = "(none)"
+                    actions_for_url = actions_url
+                    page_url = actions_url
+                raw_actions = actions_payload.get("actions") or []
+                page_actions = raw_actions if isinstance(raw_actions, list) else []
+                page_actions_text = format_page_actions_for_prompt(page_actions)
+            except Exception:  # noqa: BLE001
+                if page_url != actions_for_url:
+                    page_actions = []
+                    page_actions_text = "(none)"
+
             vault_items = list_vault(db)
             vault_text = format_vault_for_prompt(vault_items)
             decision = await call_llm_next_action(
@@ -413,6 +480,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 page_text,
                 history,
                 vault_text,
+                page_actions_text,
             )
             decision = apply_decision_guardrails(
                 decision,
@@ -422,6 +490,7 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
                 vault_text=vault_text,
                 history=history,
                 last_extract=last_extract,
+                page_actions_text=page_actions_text,
             )
             action = (decision.get("action") or "").lower().strip()
             reason = decision.get("reason") or ""

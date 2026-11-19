@@ -49,6 +49,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ content }),
     }),
+  tasks: () => request("/api/tasks"),
+  getTask: (id) => request(`/api/tasks/${id}`),
   browserStatus: () => request("/api/browser/status"),
   browserReset: () => request("/api/browser/reset", { method: "POST" }),
   browserNavigate: (url) =>

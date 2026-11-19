@@ -53,6 +53,9 @@ class BrowserClient:
     async def extract(self, selector: str = "body") -> dict[str, Any]:
         return await self._request("POST", "/extract", json={"selector": selector})
 
+    async def actions(self) -> dict[str, Any]:
+        return await self._request("GET", "/actions")
+
     async def screenshot(self) -> dict[str, Any]:
         return await self._request("GET", "/screenshot")
 

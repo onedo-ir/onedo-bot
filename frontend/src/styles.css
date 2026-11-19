@@ -514,6 +514,57 @@ select:focus {
   border-bottom-right-radius: 6px;
 }
 
+.bubble.agent-loading {
+  margin-right: auto;
+  background: var(--chat-bot);
+  color: var(--muted);
+  border-bottom-right-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding-block: 14px;
+  min-height: 48px;
+}
+
+.agent-loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.agent-loading-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: agent-loading-bounce 1.05s ease-in-out infinite;
+}
+
+.agent-loading-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.agent-loading-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.agent-loading-label {
+  font-size: 0.86rem;
+}
+
+@keyframes agent-loading-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
 .composer {
   border-top: var(--hairline);
   padding: 12px;
@@ -534,14 +585,20 @@ select:focus {
 }
 
 .composer-send {
-  align-self: stretch;
+  align-self: end;
   width: 48px;
+  height: 48px;
   min-width: 48px;
+  min-height: 48px;
+  max-width: 48px;
+  max-height: 48px;
   padding: 0;
-  border-radius: var(--radius-pill);
+  aspect-ratio: 1;
+  border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
 .composer-send-icon {
@@ -813,7 +870,11 @@ select:focus {
 
   .composer-send {
     width: 44px;
+    height: 44px;
     min-width: 44px;
+    min-height: 44px;
+    max-width: 44px;
+    max-height: 44px;
   }
 
   .bubble {

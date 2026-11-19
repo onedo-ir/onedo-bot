@@ -58,6 +58,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [agentWorking, setAgentWorking] = useState(false);
   const [frame, setFrame] = useState({
     image: null,
     url: "about:blank",
@@ -74,6 +75,41 @@ export default function ChatPage() {
   const urlInputRef = useRef(null);
   const scrollBusy = useRef(false);
   const urlSynced = useRef("");
+  const activeTaskIdRef = useRef(null);
+
+  function isActiveAgentStatus(status) {
+    return status === "pending" || status === "running";
+  }
+
+  async function syncAgentWorking(conversationId) {
+    if (!conversationId) {
+      activeTaskIdRef.current = null;
+      setAgentWorking(false);
+      return;
+    }
+    try {
+      if (activeTaskIdRef.current) {
+        const task = await api.getTask(activeTaskIdRef.current);
+        if (task.conversation_id === conversationId && isActiveAgentStatus(task.status)) {
+          setAgentWorking(true);
+          return;
+        }
+        activeTaskIdRef.current = null;
+      }
+      const tasks = await api.tasks();
+      const active = (tasks || []).find(
+        (t) => t.conversation_id === conversationId && isActiveAgentStatus(t.status),
+      );
+      if (active) {
+        activeTaskIdRef.current = active.id;
+        setAgentWorking(true);
+      } else {
+        setAgentWorking(false);
+      }
+    } catch {
+      /* ignore polling errors */
+    }
+  }
 
   async function loadConversations(selectId) {
     const list = await api.conversations();
@@ -125,11 +161,17 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    if (!activeId) return undefined;
+    if (!activeId) {
+      activeTaskIdRef.current = null;
+      setAgentWorking(false);
+      return undefined;
+    }
+    syncAgentWorking(activeId);
     const timer = setInterval(async () => {
       try {
         const detail = await api.getConversation(activeId);
         setMessages(detail.messages || []);
+        await syncAgentWorking(activeId);
       } catch {
         /* ignore polling errors */
       }
@@ -146,19 +188,25 @@ export default function ChatPage() {
 
   async function send() {
     const content = text.trim();
-    if (!content) return;
+    if (!content || busy || agentWorking) return;
     setBusy(true);
     setError("");
     try {
       const id = await ensureConversation();
       setText("");
-      await api.sendMessage(id, content);
+      const result = await api.sendMessage(id, content);
+      if (result?.task?.id) {
+        activeTaskIdRef.current = result.task.id;
+      }
+      setAgentWorking(true);
       const detail = await api.getConversation(id);
       setMessages(detail.messages || []);
       const list = await api.conversations();
       setConversations(list);
     } catch (err) {
       setError(err.message);
+      setAgentWorking(false);
+      activeTaskIdRef.current = null;
     } finally {
       setBusy(false);
     }
@@ -173,8 +221,10 @@ export default function ChatPage() {
   async function selectConversation(id) {
     setActiveId(id);
     setShowConvs(false);
+    activeTaskIdRef.current = null;
     const detail = await api.getConversation(id);
     setMessages(detail.messages || []);
+    await syncAgentWorking(id);
   }
 
   async function deleteChat(id) {
@@ -348,7 +398,7 @@ export default function ChatPage() {
 
           <div className="chat-main">
             <div className="messages">
-              {messages.length === 0 && (
+              {messages.length === 0 && !agentWorking && (
                 <div className="empty">
                   مثلاً بگو: «برو دیجی‌کالا و یک هدفون بی‌سیم خوب پیدا کن»
                   <br />
@@ -360,6 +410,21 @@ export default function ChatPage() {
                   {m.content}
                 </div>
               ))}
+              {agentWorking && (
+                <div
+                  className="bubble agent-loading"
+                  role="status"
+                  aria-live="polite"
+                  aria-label="ایجنت در حال کار است"
+                >
+                  <span className="agent-loading-dots" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                  <span className="agent-loading-label">در حال انجام…</span>
+                </div>
+              )}
             </div>
             {error && <div className="error-box" style={{ margin: "0 12px" }}>{error}</div>}
             <div className="composer">
@@ -377,12 +442,12 @@ export default function ChatPage() {
               <button
                 className="btn composer-send"
                 type="button"
-                disabled={busy}
+                disabled={busy || agentWorking}
                 onClick={send}
                 aria-label="ارسال"
                 title="ارسال"
               >
-                {busy ? (
+                {busy || agentWorking ? (
                   <svg className="composer-send-icon is-busy" viewBox="0 0 24 24" aria-hidden="true">
                     <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.25" />
                     <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />

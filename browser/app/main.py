@@ -77,6 +77,95 @@ def http_playwright_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
 
 
+async def collect_page_actions(page: Page) -> list[dict[str, str]]:
+    """Visible actionable tags on the current page only (links, buttons, fields)."""
+    try:
+        items = await page.evaluate(
+            """() => {
+  const out = [];
+  const seen = new Set();
+  const MAX = 120;
+  const isVisible = (el) => {
+    if (!el || !(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+      return false;
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1;
+  };
+  const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const esc = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const textOf = (el) => clean(
+    el.innerText || el.value || el.getAttribute('aria-label') ||
+    el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('alt') || ''
+  );
+  const push = (el, kind) => {
+    if (out.length >= MAX || !isVisible(el)) return;
+    const tag = el.tagName.toLowerCase();
+    const text = textOf(el);
+    const href = el.getAttribute('href') || '';
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const role = el.getAttribute('role') || '';
+    const name = el.getAttribute('name') || '';
+    const id = el.id || '';
+    const key = [tag, kind, href, text, type, name, id].join('|');
+    if (seen.has(key)) return;
+    seen.add(key);
+    let selector = '';
+    if (id) {
+      selector = '#' + CSS.escape(id);
+    } else if (name && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
+      selector = tag + '[name="' + esc(name) + '"]';
+    } else if (href && tag === 'a') {
+      selector = 'a[href="' + esc(href) + '"]';
+    } else if (text) {
+      selector = tag + ':has-text("' + esc(text.slice(0, 48)) + '")';
+    } else if (type) {
+      selector = tag + '[type="' + esc(type) + '"]';
+    } else {
+      selector = tag;
+    }
+    out.push({ tag, kind, text, href, type, role, name, selector });
+  };
+  document.querySelectorAll('a[href]').forEach((el) => push(el, 'link'));
+  document.querySelectorAll(
+    'button, [role="button"], input[type="submit"], input[type="button"], input[type="reset"], input[type="image"]'
+  ).forEach((el) => push(el, 'button'));
+  document.querySelectorAll('[role="link"]').forEach((el) => push(el, 'link'));
+  document.querySelectorAll(
+    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]), textarea, select'
+  ).forEach((el) => push(el, 'field'));
+  document.querySelectorAll('summary, [onclick]').forEach((el) => {
+    if (el.matches('a, button, input, textarea, select, [role="button"], [role="link"]')) return;
+    push(el, 'control');
+  });
+  return out;
+}"""
+        )
+    except PlaywrightError:
+        return []
+    if not isinstance(items, list):
+        return []
+    cleaned: list[dict[str, str]] = []
+    for raw in items[:120]:
+        if not isinstance(raw, dict):
+            continue
+        cleaned.append(
+            {
+                "tag": str(raw.get("tag") or "")[:40],
+                "kind": str(raw.get("kind") or "")[:40],
+                "text": str(raw.get("text") or "")[:120],
+                "href": str(raw.get("href") or "")[:500],
+                "type": str(raw.get("type") or "")[:40],
+                "role": str(raw.get("role") or "")[:40],
+                "name": str(raw.get("name") or "")[:80],
+                "selector": str(raw.get("selector") or "")[:240],
+            }
+        )
+    return cleaned
+
+
 async def first_actionable(page: Page, selector: str, timeout: int = 12000) -> Locator:
     """Prefer a visible match; avoid hidden inputs that compound selectors often hit first."""
     sel = (selector or "").strip() or "body"
@@ -226,6 +315,19 @@ async def extract(payload: ExtractIn):
     except PlaywrightError as exc:
         raise http_playwright_error(exc) from exc
     return {"text": text[:20000], "url": page.url}
+
+
+@app.get("/actions")
+async def actions():
+    """Interactive tags on the currently open page only (replaced after navigation)."""
+    page = await ensure_page()
+    items = await collect_page_actions(page)
+    return {
+        "url": page.url,
+        "title": await page.title(),
+        "count": len(items),
+        "actions": items,
+    }
 
 
 @app.get("/screenshot")
