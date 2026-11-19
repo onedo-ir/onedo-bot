@@ -95,6 +95,15 @@ class StatsOut(BaseModel):
     completed_tasks: int
 
 
+class BrowserAgentQueueOut(BaseModel):
+    """Single-browser agent mutex status (at most one holder)."""
+
+    holder_task_id: int | None = None
+    queue_task_ids: list[int] = []
+    queue_length: int = 0
+    locked: bool = False
+
+
 class AgentConfigOut(BaseModel):
     base_url: str
     model: str

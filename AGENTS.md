@@ -48,6 +48,7 @@
 - کوکی‌های مرورگر علاوه بر پروفایل Chromium در `/data/browser/cookies.json` هم export می‌شوند؛ ایجنت با اکشن‌های `list_cookies` / `set_cookie` / `delete_cookie` مدیریت می‌کند (نه UI پنل)
 - پروفایل پایدار Chromium در `/data/browser/chromium-profile` (ولوم `browser_data`) نگه داشته می‌شود تا کوکی، localStorage و کش بعد از ری‌استارت از بین نروند
 - کارهای دوره‌ای: جدول `scheduled_tasks` + فایل playbook در `/data/browser/scheduled_tasks/{id}.md` (هدف کاربر + مسیر جلسه با selector/URL + کنترل‌های صفحه + مراحل شماره‌دار navigate/click/type)؛ ایجنت با اکشن `schedule_periodic_task` ثبت می‌کند و مراحل مبهم رد می‌شوند؛ زمان‌بند بک‌اند سر `next_run_at` همان playbook را به‌عنوان instruction اجرا می‌کند؛ UI در `/app/schedules` فقط لیست/حذف
+- صف کنترل مرورگر: فقط **یک** ایجنت در هر لحظه Chromium را در اختیار دارد (`browser_agent_lock` در بک‌اند). چت و کارهای دوره‌ای روی همان قفل FIFO می‌مانند؛ وضعیت `pending` تا گرفتن قفل حفظ می‌شود؛ با `waiting_user` / اتمام / لغو قفل آزاد می‌شود تا نفر بعدی صف اجرا شود. وضعیت صف: `GET /api/admin-api/browser-agent-queue`
 
 ## نباید
 

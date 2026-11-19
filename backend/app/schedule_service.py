@@ -17,6 +17,9 @@ MIN_INTERVAL_MINUTES = 5
 MAX_INTERVAL_MINUTES = 60 * 24 * 30  # 30 days
 SCHEDULER_POLL_SECONDS = 30
 MIN_STEPS_CHARS = 80
+# Cap how many agent jobs may sit pending/running before we defer new due spawns.
+# Prevents unbounded queue growth when the browser lock is held for a long time.
+MAX_AGENT_QUEUE_DEPTH = 20
 
 _scheduler_task: asyncio.Task | None = None
 
@@ -296,6 +299,7 @@ async def _run_task_background(task_id: int) -> None:
 
     db = SessionLocal()
     try:
+        # run_task acquires the shared browser lock; multiple due jobs queue FIFO.
         await run_task(db, task_id)
     finally:
         db.close()
@@ -305,8 +309,21 @@ def _active_statuses() -> tuple[TaskStatus, ...]:
     return (TaskStatus.pending, TaskStatus.running, TaskStatus.waiting_user)
 
 
+def _pending_or_running_count(db: Session) -> int:
+    return (
+        db.query(AgentTask)
+        .filter(AgentTask.status.in_((TaskStatus.pending, TaskStatus.running)))
+        .count()
+    )
+
+
 def _spawn_run_for_schedule(db: Session, sched: ScheduledTask, now: datetime) -> int | None:
-    """Create conversation+task for a due schedule. Returns new task id or None if skipped."""
+    """Create conversation+task for a due schedule. Returns new task id or None if skipped.
+
+    Skips if this schedule's previous run is still active. New tasks enter the
+    global browser queue (see browser_agent_lock) so they never control Chromium
+    concurrently with another agent.
+    """
     if sched.last_task_id:
         last = db.query(AgentTask).filter(AgentTask.id == sched.last_task_id).first()
         if last and last.status in _active_statuses():
@@ -351,10 +368,20 @@ def _spawn_run_for_schedule(db: Session, sched: ScheduledTask, now: datetime) ->
 
 
 async def tick_due_schedules() -> int:
-    """Start due periodic tasks. Returns number of started runs."""
+    """Enqueue due periodic tasks. Returns number of spawned runs.
+
+    Spawns even when another agent holds the browser; ``run_task`` waits on the
+    shared lock so only one agent drives Chromium. ``next_run_at`` advances on
+    spawn so a long queue does not create duplicate due firings for the same row.
+    If the pending/running agent queue is already deep, defer (leave next_run_at)
+    until the browser drain makes room.
+    """
     db = SessionLocal()
     started = 0
     try:
+        if _pending_or_running_count(db) >= MAX_AGENT_QUEUE_DEPTH:
+            return 0
+
         now = utcnow()
         due = (
             db.query(ScheduledTask)
@@ -368,6 +395,8 @@ async def tick_due_schedules() -> int:
         )
         task_ids: list[int] = []
         for sched in due:
+            if _pending_or_running_count(db) >= MAX_AGENT_QUEUE_DEPTH:
+                break
             task_id = _spawn_run_for_schedule(db, sched, now)
             if task_id is not None:
                 task_ids.append(task_id)

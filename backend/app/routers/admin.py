@@ -5,11 +5,18 @@ from sqlalchemy.orm import Session
 import yaml
 
 from app.agent_service import cancel_agent_task
+from app.browser_agent_lock import browser_agent_queue_status
 from app.config import get_settings
 from app.database import get_db
 from app.models import AgentTask, Conversation, ScheduledTask, TaskStatus
 from app.schedule_service import delete_scheduled_task, list_scheduled_tasks, read_steps_file
-from app.schemas import AgentConfigOut, ScheduledTaskOut, StatsOut, TaskOut
+from app.schemas import (
+    AgentConfigOut,
+    BrowserAgentQueueOut,
+    ScheduledTaskOut,
+    StatsOut,
+    TaskOut,
+)
 from app.security import verify_admin_api_token
 
 settings = get_settings()
@@ -87,9 +94,19 @@ def _delete_scheduled(db: Session, schedule_id: int) -> dict:
     return {"ok": True}
 
 
+def _browser_agent_queue() -> BrowserAgentQueueOut:
+    return BrowserAgentQueueOut(**browser_agent_queue_status())
+
+
 @api_router.get("/stats", response_model=StatsOut)
 def api_stats(db: Session = Depends(get_db)):
     return _stats(db)
+
+
+@api_router.get("/browser-agent-queue", response_model=BrowserAgentQueueOut)
+def api_browser_agent_queue():
+    """Which agent holds the shared browser lock and who is waiting."""
+    return _browser_agent_queue()
 
 
 @api_router.get("/tasks", response_model=list[TaskOut])
@@ -181,6 +198,15 @@ def build_openapi_document() -> dict:
             "/api/admin-api/agent-config": {
                 "get": {
                     "summary": "تنظیمات مدل AI (فقط خواندنی از env)",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            },
+            "/api/admin-api/browser-agent-queue": {
+                "get": {
+                    "summary": (
+                        "وضعیت صف کنترل مرورگر "
+                        "(حداکثر یک ایجنت؛ کارهای دوره‌ای در صف می‌مانند)"
+                    ),
                     "responses": {"200": {"description": "OK"}},
                 }
             },

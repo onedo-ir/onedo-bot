@@ -7,6 +7,11 @@ from urllib.parse import urlparse
 import httpx
 from sqlalchemy.orm import Session
 
+from app.browser_agent_lock import (
+    BrowserControlCancelled,
+    acquire_browser_control,
+    is_browser_agent_busy,
+)
 from app.browser_client import BrowserClient
 from app.chat_memory import (
     format_chat_memory_for_prompt,
@@ -610,6 +615,37 @@ async def run_task(db: Session, task_id: int) -> AgentTask:
     task = db.query(AgentTask).filter(AgentTask.id == task_id).first()
     if not task:
         raise ValueError("task not found")
+    if task.status == TaskStatus.cancelled:
+        return task
+    if task.status not in (TaskStatus.pending, TaskStatus.running):
+        return task
+
+    # Stay pending while waiting in the single-browser queue so another agent
+    # never shares Chromium control (chat + periodic schedules).
+    if is_browser_agent_busy():
+        append_step(
+            task,
+            {
+                "action": "queued",
+                "detail": "در صف کنترل مرورگر — منتظر آزاد شدن ایجنت فعلی",
+            },
+        )
+        db.commit()
+
+    try:
+        async with acquire_browser_control(
+            task_id,
+            is_cancelled=lambda: _task_was_cancelled(db, task),
+        ):
+            return await _run_task_with_browser(db, task)
+    except BrowserControlCancelled:
+        db.refresh(task)
+        return task
+
+
+async def _run_task_with_browser(db: Session, task: AgentTask) -> AgentTask:
+    """Execute the agent loop while this task holds the browser lock."""
+    db.refresh(task)
     if task.status == TaskStatus.cancelled:
         return task
     if task.status not in (TaskStatus.pending, TaskStatus.running):
