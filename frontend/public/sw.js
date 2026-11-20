@@ -1,6 +1,6 @@
 /* Onedo bot — minimal installable PWA service worker */
-const CACHE = "onedo-bot-shell-v1";
-const PRECACHE = ["/", "/index.html", "/manifest.webmanifest", "/logo.svg", "/favicon.svg", "/icons/icon-128.png", "/icons/icon-192.png", "/icons/icon-512.png", "/icons/icon.svg", "/apple-touch-icon.png"];
+const CACHE = "onedo-bot-shell-v2";
+const PRECACHE = ["/", "/index.html", "/manifest.webmanifest", "/logo.png", "/favicon.png", "/icons/icon-128.png", "/icons/icon-192.png", "/icons/icon-512.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

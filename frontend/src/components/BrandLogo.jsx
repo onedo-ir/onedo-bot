@@ -13,7 +13,6 @@ export default function BrandLogo({ size = 44, className = "" }) {
         height={size}
         decoding="async"
       />
-      <span className="brand-antenna" />
     </span>
   );
 }

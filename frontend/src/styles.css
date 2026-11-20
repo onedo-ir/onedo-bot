@@ -130,13 +130,10 @@ select {
 .brand-logo-wrap {
   --brand-size: 44px;
   width: var(--brand-size);
-  height: calc(var(--brand-size) + 6px);
-  padding-top: 6px;
+  height: var(--brand-size);
   flex-shrink: 0;
-  position: relative;
   display: inline-grid;
-  place-items: end center;
-  overflow: visible;
+  place-items: center;
 }
 
 .brand-logo {
@@ -147,31 +144,6 @@ select {
   display: block;
   box-shadow: 0 10px 28px rgba(10, 132, 255, 0.28);
   background: #000;
-}
-
-.brand-antenna {
-  position: absolute;
-  top: -6px;
-  left: 50%;
-  width: 8px;
-  height: 8px;
-  margin-left: -4px;
-  border-radius: 50%;
-  background: linear-gradient(160deg, #7ae7ff, #2f7bff);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg) 80%, transparent), 0 4px 12px rgba(10, 132, 255, 0.45);
-  pointer-events: none;
-}
-
-.brand-antenna::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 7px;
-  width: 2px;
-  height: 7px;
-  margin-left: -1px;
-  border-radius: 2px;
-  background: linear-gradient(180deg, #7ae7ff, #2f7bff);
 }
 
 .brand-titling {
