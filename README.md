@@ -218,7 +218,7 @@ Workflow: [`.github/workflows/build-and-push.yml`](.github/workflows/build-and-p
 | Tags | `latest` + sanitized commit subject |
 | Driver | Classic Docker (no Buildx attestations / OCI index) |
 
-Required repository secrets:
+Optional repository secrets (job is **skipped**, not failed, when unset):
 
 - `REGISTRY_USERNAME`
 - `REGISTRY_PASSWORD` (token with package write)

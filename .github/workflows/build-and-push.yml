@@ -6,7 +6,7 @@
 # One job (same shape as the WordPress workflow). Builds all service images
 # sequentially: nginx, frontend, backend, browser.
 #
-# Required repository secrets:
+# Optional repository secrets (job skips cleanly when unset):
 #   REGISTRY_USERNAME  — registry / Gitea user
 #   REGISTRY_PASSWORD  — password or access token with package write
 
@@ -26,6 +26,7 @@ env:
 
 jobs:
   build-and-push:
+    if: ${{ secrets.REGISTRY_USERNAME != '' && secrets.REGISTRY_PASSWORD != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
