@@ -59,9 +59,13 @@ docker compose up -d --build
 
 ## CI / انتشار ایمیج
 
-ورک‌فلو [`.github/workflows/build-and-push.yml`](.github/workflows/build-and-push.yml) روی هر push به `main` (و `workflow_dispatch`) هر چهار ایمیج را می‌سازد و به `gitea.tmayt.ir/thaiostream` پوش می‌کند.
+یک ورک‌فلو (مثل نمونهٔ WordPress): [`.github/workflows/build-and-push.yml`](.github/workflows/build-and-push.yml)
 
-سیکریت‌های لازم در ریپو:
+- تریگر: push به `main` یا `workflow_dispatch`
+- یک جاب واحد که به‌ترتیب `onedo-bot-nginx` / `frontend` / `backend` / `browser` را بیلد و به `gitea.tmayt.ir/thaiostream` پوش می‌کند
+- تگ‌ها: `latest` + subject کامیت
+
+سیکریت‌های لازم:
 
 - `REGISTRY_USERNAME`
 - `REGISTRY_PASSWORD` (توکن با دسترسی write به پکیج)

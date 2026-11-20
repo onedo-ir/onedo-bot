@@ -1,13 +1,16 @@
-# Build Onedo bot service images and replace published :latest tags.
+# Build Onedo bot images and replace published :latest tags.
 # Runs on every push to main, or when triggered manually (workflow_dispatch).
 # Image version tag = sanitized commit subject (not the SHA hex).
 # Tuned for Gitea container registry (rejects buildx attestation / OCI index).
+#
+# One job (same shape as the WordPress workflow). Builds all service images
+# sequentially: nginx, frontend, backend, browser.
 #
 # Required repository secrets:
 #   REGISTRY_USERNAME  — registry / Gitea user
 #   REGISTRY_PASSWORD  — password or access token with package write
 
-name: Build and Push Images
+name: Build and Push Image
 
 on:
   push:
@@ -19,26 +22,11 @@ env:
   IMAGE_PREFIX: gitea.tmayt.ir/thaiostream
   # Prevent BuildKit from attaching attestation manifests (Gitea → "unknown")
   BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
+  DOCKER_BUILDKIT: "1"
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - service: nginx
-            context: ./nginx
-            image: onedo-bot-nginx
-          - service: frontend
-            context: ./frontend
-            image: onedo-bot-frontend
-          - service: backend
-            context: ./backend
-            image: onedo-bot-backend
-          - service: browser
-            context: ./browser
-            image: onedo-bot-browser
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -73,15 +61,27 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Commit subject : ${SUBJECT}"
           echo "Image version  : ${VERSION}"
-          echo "Service image  : ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}"
 
       - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          push: true
-          provenance: false
-          sbom: false
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:latest
-            ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          PREFIX="${{ env.IMAGE_PREFIX }}"
+
+          build_push() {
+            local name="$1"
+            local context="$2"
+            local image="${PREFIX}/${name}"
+            echo "==> Building ${image}:{latest,${VERSION}} from ${context}"
+            docker build \
+              -t "${image}:latest" \
+              -t "${image}:${VERSION}" \
+              "${context}"
+            docker push "${image}:latest"
+            docker push "${image}:${VERSION}"
+          }
+
+          build_push onedo-bot-nginx ./nginx
+          build_push onedo-bot-frontend ./frontend
+          build_push onedo-bot-backend ./backend
+          build_push onedo-bot-browser ./browser
